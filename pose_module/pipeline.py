@@ -9,13 +9,15 @@ import numpy as np
 
 from pose_module.export.debug_video import (
     render_pose_overlay_video,
+    render_pose3d_side_by_side_video,
     resolve_debug_overlay_variant_path,
 )
 from pose_module.interfaces import Pose2DJob
 from pose_module.io.cache import write_json_file
+from pose_module.motionbert.lifter import MotionBERTPredictor, run_motionbert_lifter
 from pose_module.io.video_loader import frame_indices_to_timestamps, select_frame_indices
 from pose_module.processing.cleaner2d import clean_pose_sequence2d
-from pose_module.processing.quality import merge_stage53_quality_reports
+from pose_module.processing.quality import merge_stage53_quality_reports, merge_stage55_quality_reports
 from pose_module.tracking.person_selector import build_person_track_report, link_person_tracks
 from pose_module.vitpose.adapter import (
     canonicalize_pose_sequence2d,
@@ -32,7 +34,7 @@ def run_pose2d_pipeline(
     output_dir: str | Path,
     fps_target: int = 20,
     save_debug: bool = True,
-    env_name: str = "auto",
+    env_name: str = "openmmlab",
     video_metadata: Optional[Mapping[str, Any]] = None,
     model_alias: str = "vitpose-b",
 ) -> Dict[str, Any]:
@@ -159,6 +161,106 @@ def run_pose2d_pipeline(
     }
 
 
+def run_pose3d_pipeline(
+    *,
+    clip_id: str,
+    video_path: str,
+    output_dir: str | Path,
+    fps_target: int = 20,
+    save_debug: bool = True,
+    env_name: str = "openmmlab",
+    video_metadata: Optional[Mapping[str, Any]] = None,
+    model_alias: str = "vitpose-b",
+    motionbert_window_size: int = 81,
+    motionbert_window_overlap: float = 0.5,
+    include_motionbert_confidence: bool = True,
+    motionbert_predictor: Optional[MotionBERTPredictor] = None,
+    motionbert_backend_name: Optional[str] = None,
+    motionbert_env_name: Optional[str] = None,
+    motionbert_config_path: Optional[str] = None,
+    motionbert_checkpoint_path: Optional[str] = None,
+    motionbert_device: str = "auto",
+    allow_motionbert_fallback_backend: bool = False,
+) -> Dict[str, Any]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pose2d_result = run_pose2d_pipeline(
+        clip_id=str(clip_id),
+        video_path=str(video_path),
+        output_dir=output_dir,
+        fps_target=int(fps_target),
+        save_debug=bool(save_debug),
+        env_name=str(env_name),
+        video_metadata=video_metadata,
+        model_alias=str(model_alias),
+    )
+
+    lifter_result = run_motionbert_lifter(
+        pose2d_result["pose_sequence"],
+        output_dir=output_dir,
+        window_size=int(motionbert_window_size),
+        window_overlap=float(motionbert_window_overlap),
+        include_confidence=bool(include_motionbert_confidence),
+        predictor=motionbert_predictor,
+        backend_name=motionbert_backend_name,
+        config_path=motionbert_config_path,
+        checkpoint=motionbert_checkpoint_path,
+        device=str(motionbert_device),
+        env_name=str(env_name if motionbert_env_name is None else motionbert_env_name),
+        allow_fallback_backend=bool(allow_motionbert_fallback_backend),
+    )
+
+    merged_quality = merge_stage55_quality_reports(
+        pose2d_quality=pose2d_result["quality_report"],
+        lifter_quality=lifter_result["quality_report"],
+    )
+    pose3d_debug_overlay_path = None
+    if save_debug:
+        cleaner_artifacts = pose2d_result["cleaner_artifacts"]
+        clean_keypoints_xy_pixels = _restore_clean_pose_pixels(
+            pose2d_result["pose_sequence"].keypoints_xy,
+            cleaner_artifacts["normalization_centers_xy"],
+            cleaner_artifacts["normalization_scales"],
+            pose2d_result["pose_sequence"].confidence,
+        )
+        pose3d_debug_overlay_path = _render_pose3d_debug_overlay(
+            video_path=str(video_path),
+            output_path=resolve_debug_overlay_variant_path(
+                output_dir,
+                variant="pose3d_raw",
+                enabled=True,
+            ),
+            pose_sequence_2d=pose2d_result["pose_sequence"],
+            clean_keypoints_xy=clean_keypoints_xy_pixels,
+            pose_sequence_3d=lifter_result["pose_sequence"],
+            merged_quality=merged_quality,
+        )
+    write_json_file(merged_quality, output_dir / "quality_report.json")
+
+    artifacts = dict(pose2d_result["artifacts"])
+    artifacts.update(lifter_result["artifacts"])
+    artifacts["quality_report_json_path"] = str((output_dir / "quality_report.json").resolve())
+    artifacts["debug_overlay_pose3d_raw_path"] = (
+        None if pose3d_debug_overlay_path is None else str(pose3d_debug_overlay_path)
+    )
+
+    return {
+        "clip_id": str(clip_id),
+        "pose2d_result": pose2d_result,
+        "pose_sequence": lifter_result["pose_sequence"],
+        "pose_sequence_2d": pose2d_result["pose_sequence"],
+        "raw_pose_sequence_2d": pose2d_result["raw_pose_sequence"],
+        "quality_report": merged_quality,
+        "pose2d_quality_report": pose2d_result["quality_report"],
+        "motionbert_quality_report": lifter_result["quality_report"],
+        "track_report": pose2d_result["track_report"],
+        "backend_run": pose2d_result["backend_run"],
+        "motionbert_run": lifter_result["run_report"],
+        "artifacts": artifacts,
+    }
+
+
 def _optional_float(raw_value: Any) -> Optional[float]:
     if raw_value in (None, ""):
         return None
@@ -212,6 +314,41 @@ def _render_debug_overlay_variant(
     except Exception as exc:
         notes = list(merged_quality.get("notes", []))
         notes.append(f"{overlay_variant}_debug_overlay_failed:{exc}")
+        merged_quality["notes"] = list(dict.fromkeys(str(value) for value in notes))
+        if merged_quality.get("status") == "ok":
+            merged_quality["status"] = "warning"
+        return None
+
+
+def _render_pose3d_debug_overlay(
+    *,
+    video_path: str,
+    output_path: Path | None,
+    pose_sequence_2d: Any,
+    clean_keypoints_xy: np.ndarray,
+    pose_sequence_3d: Any,
+    merged_quality: Dict[str, Any],
+) -> Path | None:
+    if output_path is None:
+        return None
+    try:
+        return render_pose3d_side_by_side_video(
+            video_path=video_path,
+            output_path=output_path,
+            frame_indices=np.asarray(pose_sequence_3d.frame_indices, dtype=np.int32),
+            keypoints_xy=np.asarray(clean_keypoints_xy, dtype=np.float32),
+            confidence_2d=np.asarray(pose_sequence_2d.confidence, dtype=np.float32),
+            joint_names_2d=pose_sequence_2d.joint_names_2d,
+            joint_positions_xyz=np.asarray(pose_sequence_3d.joint_positions_xyz, dtype=np.float32),
+            confidence_3d=np.asarray(pose_sequence_3d.joint_confidence, dtype=np.float32),
+            joint_names_3d=pose_sequence_3d.joint_names_3d,
+            skeleton_parents=pose_sequence_3d.skeleton_parents,
+            bbox_xywh=np.asarray(pose_sequence_2d.bbox_xywh, dtype=np.float32),
+            fps=pose_sequence_3d.fps,
+        )
+    except Exception as exc:
+        notes = list(merged_quality.get("notes", []))
+        notes.append(f"pose3d_raw_debug_overlay_failed:{exc}")
         merged_quality["notes"] = list(dict.fromkeys(str(value) for value in notes))
         if merged_quality.get("status") == "ok":
             merged_quality["status"] = "warning"

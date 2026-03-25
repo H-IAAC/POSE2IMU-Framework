@@ -59,3 +59,46 @@ def merge_stage53_quality_reports(
         "normalization_mode": cleaner_quality.get("normalization_mode"),
         "notes": list(dict.fromkeys(notes)),
     }
+
+
+def merge_stage55_quality_reports(
+    *,
+    pose2d_quality: Mapping[str, Any],
+    lifter_quality: Mapping[str, Any],
+) -> Dict[str, Any]:
+    pose2d_quality = dict(pose2d_quality)
+    lifter_quality = dict(lifter_quality)
+
+    notes = []
+    notes.extend([str(value) for value in pose2d_quality.get("notes", [])])
+    notes.extend([str(value) for value in lifter_quality.get("notes", [])])
+
+    status = "ok"
+    if pose2d_quality.get("status") == "fail" or lifter_quality.get("status") == "fail":
+        status = "fail"
+    elif (
+        pose2d_quality.get("status") == "warning"
+        or lifter_quality.get("status") == "warning"
+        or len(notes) > 0
+    ):
+        status = "warning"
+
+    merged = dict(pose2d_quality)
+    merged.update(
+        {
+            "status": str(status),
+            "pose3d_num_frames": lifter_quality.get("num_frames"),
+            "pose3d_num_joints": lifter_quality.get("num_joints"),
+            "pose3d_coordinate_space": lifter_quality.get("coordinate_space"),
+            "pose3d_joint_format": lifter_quality.get("output_joint_format"),
+            "motionbert_backend_name": lifter_quality.get("backend_name"),
+            "motionbert_window_size": lifter_quality.get("window_size"),
+            "motionbert_window_overlap": lifter_quality.get("window_overlap"),
+            "motionbert_num_windows": lifter_quality.get("num_windows"),
+            "motionbert_input_channels": lifter_quality.get("input_channels"),
+            "depth_variation": lifter_quality.get("depth_variation"),
+            "window_coverage_ratio": lifter_quality.get("window_coverage_ratio"),
+            "notes": list(dict.fromkeys(notes)),
+        }
+    )
+    return merged

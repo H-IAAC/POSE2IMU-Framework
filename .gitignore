@@ -1,6 +1,6 @@
 # .gitignore
 
-checkpoints/
+/checkpoints/
 pretrained/
 ViT-B-32.pt
 api_key.txt
@@ -72,3 +72,4 @@ dmypy.json
 
 data/
 output/
+checkpoints/

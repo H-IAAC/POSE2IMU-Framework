@@ -7,10 +7,11 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
+from pose_module.model_registry import resolve_local_pose2d_backend_artifacts
+from pose_module.openmmlab_runtime import select_openmmlab_launcher
 from pose_module.export.debug_video import resolve_debug_overlay_path
 from pose_module.interfaces import Pose2DJob, Pose2DResult
 from pose_module.io.cache import load_json_file, tail_text, write_json_file
@@ -30,7 +31,11 @@ def run_backend_job(
     write_json_file(job.to_dict(), job_json_path)
 
     repo_root = Path(__file__).resolve().parents[2]
-    launcher, probe_diagnostics = _select_backend_launcher(str(env_name), cwd=repo_root)
+    launcher, probe_diagnostics = select_openmmlab_launcher(
+        str(env_name),
+        cwd=repo_root,
+        probe_code="import mmpose, mmdet, mmpretrain; print('ok')",
+    )
     if launcher is None:
         backend_run = {
             "status": "fail",
@@ -46,7 +51,7 @@ def run_backend_job(
                 "probe_diagnostics": probe_diagnostics,
             },
             "error": "No Python launcher with mmpose/mmdet/mmpretrain available. "
-            "Use --env-name openmmlab or install OpenMMLab packages in the active interpreter.",
+            "Use --env-name openmmlab and populate pose_module/checkpoints with local model files.",
             "env_name": str(env_name),
             "returncode": 1,
         }
@@ -112,121 +117,6 @@ def run_backend_job(
     return backend_run
 
 
-def _select_backend_launcher(env_name: str, *, cwd: Path) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-    diagnostics: List[Dict[str, Any]] = []
-    for candidate in _build_launcher_candidates(env_name):
-        probe_command = list(candidate["prefix"]) + [
-            "-c",
-            "import mmpose, mmdet, mmpretrain; print('ok')",
-        ]
-        completed = subprocess.run(
-            probe_command,
-            cwd=str(cwd.resolve()),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        diagnostics.append(
-            {
-                "name": str(candidate["name"]),
-                "python": str(candidate["python"]),
-                "command": probe_command,
-                "returncode": int(completed.returncode),
-                "stdout_tail": tail_text(completed.stdout, max_chars=2000) if completed.stdout else "",
-                "stderr_tail": tail_text(completed.stderr, max_chars=2000) if completed.stderr else "",
-            }
-        )
-        if completed.returncode == 0:
-            return candidate, diagnostics
-    return None, diagnostics
-
-
-def _build_launcher_candidates(env_name: str) -> List[Dict[str, Any]]:
-    normalized = str(env_name).strip()
-    lowered = normalized.lower()
-
-    candidates: List[Dict[str, Any]] = []
-    if lowered not in {"", "auto", "current"}:
-        conda_python = _resolve_conda_env_python(normalized)
-        if conda_python is not None:
-            candidates.append(
-                {
-                    "name": "conda_env_python",
-                    "python": str(conda_python),
-                    "prefix": [str(conda_python)],
-                }
-            )
-        candidates.append(
-            {
-                "name": "conda_env",
-                "python": f"conda:{normalized}",
-                "prefix": ["conda", "run", "-n", normalized, "python"],
-            }
-        )
-
-    candidates.append(
-        {
-            "name": "current_python",
-            "python": str(Path(sys.executable).resolve()),
-            "prefix": [str(Path(sys.executable).resolve())],
-        }
-    )
-
-    if lowered in {"", "auto"}:
-        openmmlab_python = _resolve_conda_env_python("openmmlab")
-        if openmmlab_python is not None:
-            candidates.append(
-                {
-                    "name": "conda_env_python",
-                    "python": str(openmmlab_python),
-                    "prefix": [str(openmmlab_python)],
-                }
-            )
-        candidates.append(
-            {
-                "name": "conda_env",
-                "python": "conda:openmmlab",
-                "prefix": ["conda", "run", "-n", "openmmlab", "python"],
-            }
-        )
-
-    return candidates
-
-
-def _resolve_conda_env_python(env_name: str) -> Optional[Path]:
-    try:
-        completed = subprocess.run(
-            ["conda", "env", "list", "--json"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return None
-
-    if completed.returncode != 0:
-        return None
-
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return None
-
-    env_paths = payload.get("envs", [])
-    if not isinstance(env_paths, list):
-        return None
-
-    normalized = str(env_name).strip()
-    for raw_env_path in env_paths:
-        env_path = Path(str(raw_env_path))
-        if env_path.name != normalized:
-            continue
-        python_path = env_path / "bin" / "python"
-        if python_path.exists():
-            return python_path.resolve()
-    return None
-
-
 def run_pose2d_backend(job: Pose2DJob) -> Pose2DResult:
     from mmpose import __version__ as mmpose_version
     from mmpose.apis import MMPoseInferencer
@@ -246,8 +136,12 @@ def run_pose2d_backend(job: Pose2DJob) -> Pose2DResult:
         debug_overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
     device = _resolve_device(str(job.device_preference))
+    model_artifacts = resolve_local_pose2d_backend_artifacts(str(job.model_alias))
     inferencer = MMPoseInferencer(
-        pose2d=str(job.model_alias),
+        pose2d=str(model_artifacts.pose2d_config_path),
+        pose2d_weights=str(model_artifacts.pose2d_checkpoint_path),
+        det_model=str(model_artifacts.detector_config_path),
+        det_weights=str(model_artifacts.detector_checkpoint_path),
         det_cat_ids=list(job.detector_category_ids),
         device=device,
         show_progress=False,
@@ -311,6 +205,12 @@ def run_pose2d_backend(job: Pose2DJob) -> Pose2DResult:
         },
         backend={
             "model_alias": str(job.model_alias),
+            "pose2d_model_id": str(model_artifacts.pose2d_model_id),
+            "pose2d_config_path": str(model_artifacts.pose2d_config_path),
+            "pose2d_checkpoint_path": str(model_artifacts.pose2d_checkpoint_path),
+            "detector_model_id": str(model_artifacts.detector_model_id),
+            "detector_config_path": str(model_artifacts.detector_config_path),
+            "detector_checkpoint_path": str(model_artifacts.detector_checkpoint_path),
             "device": str(device),
             "device_preference": str(job.device_preference),
             "detector_category_ids": [int(value) for value in job.detector_category_ids],

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -151,6 +151,65 @@ class Pose2DResult:
 
 
 @dataclass(frozen=True)
+class MotionBERTJob:
+    clip_id: str
+    output_dir: str
+    window_size: int = 81
+    window_overlap: float = 0.5
+    include_confidence: bool = True
+    backend_name: str = "mmpose_motionbert"
+    checkpoint: Optional[str] = None
+    config_path: Optional[str] = None
+    device: str = "auto"
+    pose2d_source: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "clip_id": str(self.clip_id),
+            "output_dir": str(self.output_dir),
+            "window_size": int(self.window_size),
+            "window_overlap": float(self.window_overlap),
+            "include_confidence": bool(self.include_confidence),
+            "backend_name": str(self.backend_name),
+            "checkpoint": None if self.checkpoint is None else str(self.checkpoint),
+            "config_path": None if self.config_path is None else str(self.config_path),
+            "device": str(self.device),
+            "pose2d_source": None if self.pose2d_source is None else str(self.pose2d_source),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "MotionBERTJob":
+        return cls(
+            clip_id=str(payload["clip_id"]),
+            output_dir=str(payload["output_dir"]),
+            window_size=int(payload.get("window_size", 81)),
+            window_overlap=float(payload.get("window_overlap", 0.5)),
+            include_confidence=bool(payload.get("include_confidence", True)),
+            backend_name=str(payload.get("backend_name", "mmpose_motionbert")),
+            checkpoint=None if payload.get("checkpoint") in (None, "") else str(payload.get("checkpoint")),
+            config_path=None if payload.get("config_path") in (None, "") else str(payload.get("config_path")),
+            device=str(payload.get("device", "auto")),
+            pose2d_source=None if payload.get("pose2d_source") in (None, "") else str(payload.get("pose2d_source")),
+        )
+
+    @property
+    def pose3d_npz_path(self) -> Path:
+        return Path(self.output_dir) / "pose3d.npz"
+
+    @property
+    def input_pose2d_path(self) -> Path:
+        return Path(self.output_dir) / "motionbert_input_pose2d.npz"
+
+    @property
+    def raw_keypoints_3d_path(self) -> Path:
+        return Path(self.output_dir) / "3d_keypoints_raw.npy"
+
+    @property
+    def run_report_path(self) -> Path:
+        return Path(self.output_dir) / "motionbert_run.json"
+
+
+@dataclass(frozen=True)
 class PoseFrameInstance:
     frame_id: int
     bbox_xyxy: np.ndarray
@@ -193,6 +252,84 @@ class PoseSequence2D:
             "num_frames": np.asarray(self.num_frames, dtype=np.int32),
             "source": np.asarray(self.source),
         }
+
+    @classmethod
+    def from_npz_payload(cls, payload: Mapping[str, Any]) -> "PoseSequence2D":
+        fps = float(np.asarray(payload["fps"]).item())
+        fps_original = float(np.asarray(payload["fps_original"]).item())
+        return cls(
+            clip_id=str(np.asarray(payload["clip_id"]).item()),
+            fps=None if fps < 0.0 else fps,
+            fps_original=None if fps_original < 0.0 else fps_original,
+            joint_names_2d=[str(value) for value in np.asarray(payload["joint_names_2d"]).tolist()],
+            keypoints_xy=np.asarray(payload["keypoints_xy"], dtype=np.float32),
+            confidence=np.asarray(payload["confidence"], dtype=np.float32),
+            bbox_xywh=np.asarray(payload["bbox_xywh"], dtype=np.float32),
+            frame_indices=np.asarray(payload["frame_indices"], dtype=np.int32),
+            timestamps_sec=np.asarray(payload["timestamps_sec"], dtype=np.float32),
+            source=str(np.asarray(payload["source"]).item()),
+        )
+
+
+@dataclass(frozen=True)
+class PoseSequence3D:
+    clip_id: str
+    fps: Optional[float]
+    fps_original: Optional[float]
+    joint_names_3d: Sequence[str]
+    joint_positions_xyz: np.ndarray
+    joint_confidence: np.ndarray
+    skeleton_parents: Sequence[int]
+    frame_indices: np.ndarray
+    timestamps_sec: np.ndarray
+    source: str
+    coordinate_space: str = "camera"
+
+    @property
+    def num_frames(self) -> int:
+        return int(self.joint_positions_xyz.shape[0])
+
+    @property
+    def num_joints(self) -> int:
+        return int(self.joint_positions_xyz.shape[1])
+
+    def to_npz_payload(self) -> Dict[str, Any]:
+        return {
+            "clip_id": np.asarray(self.clip_id),
+            "joint_names_3d": np.asarray(list(self.joint_names_3d)),
+            "joint_positions_xyz": np.asarray(self.joint_positions_xyz, dtype=np.float32),
+            "joint_confidence": np.asarray(self.joint_confidence, dtype=np.float32),
+            "skeleton_parents": np.asarray(list(self.skeleton_parents), dtype=np.int32),
+            "frame_indices": np.asarray(self.frame_indices, dtype=np.int32),
+            "timestamps_sec": np.asarray(self.timestamps_sec, dtype=np.float32),
+            "fps": np.asarray(-1.0 if self.fps is None else float(self.fps), dtype=np.float32),
+            "fps_original": np.asarray(
+                -1.0 if self.fps_original is None else float(self.fps_original),
+                dtype=np.float32,
+            ),
+            "num_frames": np.asarray(self.num_frames, dtype=np.int32),
+            "num_joints": np.asarray(self.num_joints, dtype=np.int32),
+            "source": np.asarray(self.source),
+            "coordinate_space": np.asarray(self.coordinate_space),
+        }
+
+    @classmethod
+    def from_npz_payload(cls, payload: Mapping[str, Any]) -> "PoseSequence3D":
+        fps = float(np.asarray(payload["fps"]).item())
+        fps_original = float(np.asarray(payload["fps_original"]).item())
+        return cls(
+            clip_id=str(np.asarray(payload["clip_id"]).item()),
+            fps=None if fps < 0.0 else fps,
+            fps_original=None if fps_original < 0.0 else fps_original,
+            joint_names_3d=[str(value) for value in np.asarray(payload["joint_names_3d"]).tolist()],
+            joint_positions_xyz=np.asarray(payload["joint_positions_xyz"], dtype=np.float32),
+            joint_confidence=np.asarray(payload["joint_confidence"], dtype=np.float32),
+            skeleton_parents=[int(value) for value in np.asarray(payload["skeleton_parents"]).tolist()],
+            frame_indices=np.asarray(payload["frame_indices"], dtype=np.int32),
+            timestamps_sec=np.asarray(payload["timestamps_sec"], dtype=np.float32),
+            source=str(np.asarray(payload["source"]).item()),
+            coordinate_space=str(np.asarray(payload["coordinate_space"]).item()),
+        )
 
 
 def _optional_float(value: Any) -> Optional[float]:

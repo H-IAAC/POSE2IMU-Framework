@@ -6,8 +6,22 @@ pose_module:
 
 vitpose:
   model_alias: vitpose-b
+  model_id: td-hm_ViTPose-base-simple_8xb64-210e_coco-256x192
+  detector_model_id: rtmdet_m_8xb32-300e_coco
   device: auto
   keypoint_format: coco
+
+motionbert:
+  backend_name: mmpose_motionbert
+  model_id: motionbert_dstformer-ft-243frm_8xb32-120e_h36m
+  config_path: ""
+  checkpoint_path: ""
+  env_name: openmmlab
+  device: auto
+  window_size: 81
+  window_overlap: 0.5
+  include_confidence: true
+  allow_fallback_backend: false
 
 tracking:
   max_gap_frames: 5
