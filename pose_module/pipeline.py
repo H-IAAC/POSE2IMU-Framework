@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 
+from pose_module.export.bvh import export_pose_sequence3d_to_bvh
 from pose_module.export.debug_video import (
     render_pose_overlay_video,
     render_pose3d_side_by_side_video,
@@ -18,7 +19,11 @@ from pose_module.motionbert.adapter import write_pose_sequence3d_npz
 from pose_module.motionbert.lifter import MotionBERTPredictor, run_motionbert_lifter
 from pose_module.io.video_loader import frame_indices_to_timestamps, select_frame_indices
 from pose_module.processing.cleaner2d import clean_pose_sequence2d
-from pose_module.processing.quality import merge_stage53_quality_reports, merge_stage56_quality_reports
+from pose_module.processing.metric_normalizer import run_metric_normalizer
+from pose_module.processing.quality import (
+    merge_stage53_quality_reports,
+    merge_stage57_quality_reports,
+)
 from pose_module.processing.skeleton_mapper import map_pose_sequence_to_imugpt22
 from pose_module.tracking.person_selector import build_person_track_report, link_person_tracks
 from pose_module.vitpose.adapter import (
@@ -225,12 +230,26 @@ def run_pose3d_pipeline(
     mapped_pose_sequence_3d, mapper_quality, mapper_artifacts = map_pose_sequence_to_imugpt22(
         raw_pose_sequence_3d,
     )
-    write_pose_sequence3d_npz(mapped_pose_sequence_3d, output_dir / "pose3d.npz")
+    metric_normalizer_result = run_metric_normalizer(mapped_pose_sequence_3d)
+    metric_pose_sequence_3d = metric_normalizer_result["pose_sequence"]
+    metric_normalization = metric_normalizer_result["normalization_result"]
+    metric_quality = metric_normalizer_result["quality_report"]
+    metric_artifacts = metric_normalizer_result["artifacts"]
+    write_pose_sequence3d_npz(metric_pose_sequence_3d, output_dir / "pose3d.npz")
+    np.save(
+        output_dir / "3d_keypoints_metric.npy",
+        np.asarray(metric_normalization["joint_positions_smoothed"], dtype=np.float32),
+    )
+    bvh_artifacts = export_pose_sequence3d_to_bvh(
+        metric_pose_sequence_3d,
+        output_dir / "pose3d.bvh",
+    )
 
-    merged_quality = merge_stage56_quality_reports(
+    merged_quality = merge_stage57_quality_reports(
         pose2d_quality=pose2d_result["quality_report"],
         lifter_quality=lifter_result["quality_report"],
         mapper_quality=mapper_quality,
+        normalizer_quality=metric_quality,
     )
     pose3d_debug_overlay_path = None
     pose3d_imugpt22_debug_overlay_path = None
@@ -264,7 +283,7 @@ def run_pose3d_pipeline(
             ),
             pose_sequence_2d=pose2d_result["pose_sequence"],
             clean_keypoints_xy=clean_keypoints_xy_pixels,
-            pose_sequence_3d=mapped_pose_sequence_3d,
+            pose_sequence_3d=metric_pose_sequence_3d,
             overlay_variant="pose3d_imugpt22",
             merged_quality=merged_quality,
         )
@@ -274,6 +293,8 @@ def run_pose3d_pipeline(
     artifacts.update(lifter_result["artifacts"])
     artifacts["pose3d_motionbert17_npz_path"] = str(raw_motionbert_pose3d_path.resolve())
     artifacts["pose3d_npz_path"] = str((output_dir / "pose3d.npz").resolve())
+    artifacts["pose3d_metric_keypoints_path"] = str((output_dir / "3d_keypoints_metric.npy").resolve())
+    artifacts["pose3d_bvh_path"] = str(Path(bvh_artifacts["pose3d_bvh_path"]).resolve())
     artifacts["quality_report_json_path"] = str((output_dir / "quality_report.json").resolve())
     artifacts["debug_overlay_pose3d_raw_path"] = (
         None if pose3d_debug_overlay_path is None else str(pose3d_debug_overlay_path)
@@ -285,18 +306,22 @@ def run_pose3d_pipeline(
     return {
         "clip_id": str(clip_id),
         "pose2d_result": pose2d_result,
-        "pose_sequence": mapped_pose_sequence_3d,
+        "pose_sequence": metric_pose_sequence_3d,
         "motionbert_pose_sequence": raw_pose_sequence_3d,
+        "skeleton_mapped_pose_sequence": mapped_pose_sequence_3d,
         "pose_sequence_2d": pose2d_result["pose_sequence"],
         "raw_pose_sequence_2d": pose2d_result["raw_pose_sequence"],
         "quality_report": merged_quality,
         "pose2d_quality_report": pose2d_result["quality_report"],
         "motionbert_quality_report": lifter_result["quality_report"],
         "skeleton_mapper_quality_report": mapper_quality,
+        "metric_normalization_quality_report": metric_quality,
         "track_report": pose2d_result["track_report"],
         "backend_run": pose2d_result["backend_run"],
         "motionbert_run": lifter_result["run_report"],
         "skeleton_mapper_artifacts": mapper_artifacts,
+        "metric_normalization_result": metric_normalization,
+        "metric_normalization_artifacts": metric_artifacts,
         "artifacts": artifacts,
     }
 

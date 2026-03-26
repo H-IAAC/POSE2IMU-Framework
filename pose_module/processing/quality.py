@@ -165,3 +165,85 @@ def merge_stage56_quality_reports(
         }
     )
     return merged
+
+
+def merge_stage57_quality_reports(
+    *,
+    pose2d_quality: Mapping[str, Any],
+    lifter_quality: Mapping[str, Any],
+    mapper_quality: Mapping[str, Any],
+    normalizer_quality: Mapping[str, Any],
+) -> Dict[str, Any]:
+    pose2d_quality = dict(pose2d_quality)
+    lifter_quality = dict(lifter_quality)
+    mapper_quality = dict(mapper_quality)
+    normalizer_quality = dict(normalizer_quality)
+
+    notes = []
+    notes.extend([str(value) for value in pose2d_quality.get("notes", [])])
+    notes.extend([str(value) for value in lifter_quality.get("notes", [])])
+    notes.extend([str(value) for value in mapper_quality.get("notes", [])])
+    notes.extend([str(value) for value in normalizer_quality.get("notes", [])])
+
+    status = "ok"
+    if (
+        pose2d_quality.get("status") == "fail"
+        or lifter_quality.get("status") == "fail"
+        or mapper_quality.get("status") == "fail"
+        or normalizer_quality.get("status") == "fail"
+    ):
+        status = "fail"
+    elif (
+        pose2d_quality.get("status") == "warning"
+        or lifter_quality.get("status") == "warning"
+        or mapper_quality.get("status") == "warning"
+        or normalizer_quality.get("status") == "warning"
+        or len(notes) > 0
+    ):
+        status = "warning"
+
+    merged = dict(pose2d_quality)
+    merged.update(
+        {
+            "status": str(status),
+            "pose3d_num_frames": normalizer_quality.get("num_frames", mapper_quality.get("num_frames")),
+            "pose3d_num_joints": normalizer_quality.get("num_joints", mapper_quality.get("num_joints")),
+            "pose3d_coordinate_space": normalizer_quality.get(
+                "coordinate_space",
+                mapper_quality.get("coordinate_space", lifter_quality.get("coordinate_space")),
+            ),
+            "pose3d_joint_format": normalizer_quality.get(
+                "output_joint_format",
+                mapper_quality.get("output_joint_format", lifter_quality.get("output_joint_format")),
+            ),
+            "motionbert_output_joint_format": lifter_quality.get("output_joint_format"),
+            "motionbert_backend_name": lifter_quality.get("backend_name"),
+            "motionbert_window_size": lifter_quality.get("window_size"),
+            "motionbert_window_overlap": lifter_quality.get("window_overlap"),
+            "motionbert_num_windows": lifter_quality.get("num_windows"),
+            "motionbert_input_channels": lifter_quality.get("input_channels"),
+            "depth_variation": lifter_quality.get("depth_variation"),
+            "window_coverage_ratio": lifter_quality.get("window_coverage_ratio"),
+            "skeleton_mapping_ok": mapper_quality.get("skeleton_mapping_ok"),
+            "skeleton_mapper_input_joint_format": mapper_quality.get("input_joint_format"),
+            "skeleton_mapper_output_joint_format": mapper_quality.get("output_joint_format"),
+            "handedness_swapped_frames": mapper_quality.get("handedness_swapped_frames"),
+            "forward_vector_fallback_frames": mapper_quality.get("forward_vector_fallback_frames"),
+            "metric_pose_ok": normalizer_quality.get("metric_pose_ok"),
+            "metric_normalizer_coordinate_space": normalizer_quality.get("coordinate_space"),
+            "metric_normalizer_scale_factor": normalizer_quality.get("scale_factor"),
+            "metric_normalizer_target_femur_length_m": normalizer_quality.get("target_femur_length_m"),
+            "metric_normalizer_observed_femur_length_model_units": normalizer_quality.get(
+                "observed_femur_length_model_units"
+            ),
+            "metric_normalizer_body_frame_fallback_frames": normalizer_quality.get(
+                "body_frame_fallback_frames"
+            ),
+            "metric_normalizer_smoothing_window_length": normalizer_quality.get(
+                "smoothing_window_length"
+            ),
+            "metric_normalizer_smoothing_polyorder": normalizer_quality.get("smoothing_polyorder"),
+            "notes": list(dict.fromkeys(notes)),
+        }
+    )
+    return merged

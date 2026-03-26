@@ -103,6 +103,7 @@ _H36M17_NAME_ALIASES = {
 _POSE_LIFTER_AXIS_ORDER = (0, 2, 1)
 _POSE_LIFTER_AXIS_SIGN = (-1.0, 1.0, -1.0)
 _DEFAULT_IMAGE_SIZE_HW = (256, 256)
+_IMPUTED_2D_CONFIDENCE_FLOOR = 0.05
 
 _DEPTH_PRIORS = {
     "pelvis": 0.00,
@@ -364,21 +365,28 @@ def run_motionbert_backend(job: MotionBERTJob) -> Dict[str, Any]:
     for frame_index in range(sequence.num_frames):
         keypoints_xy = np.asarray(filled_sequence_xy[frame_index], dtype=np.float32)
         confidence = np.asarray(sequence.confidence[frame_index], dtype=np.float32)
-        valid_mask = (
+        original_valid_mask = (
             np.isfinite(np.asarray(sequence.keypoints_xy[frame_index], dtype=np.float32)).all(axis=1)
             & (confidence > 0.0)
         )
+        filled_valid_mask = np.isfinite(keypoints_xy).all(axis=1)
 
-        if not np.any(valid_mask):
+        if not np.any(filled_valid_mask):
             pose_history.append([])
             pred_frames.append(None)
             pred_confidence.append(None)
             continue
 
         converted_keypoints_xy = _apply_linear_conversion(conversion_weights, keypoints_xy)
-        converted_mask = _convert_mask(valid_mask, conversion_weights)
+        effective_confidence = confidence.copy()
+        imputed_mask = filled_valid_mask & ~original_valid_mask
+        effective_confidence[imputed_mask] = np.maximum(
+            effective_confidence[imputed_mask],
+            np.float32(_IMPUTED_2D_CONFIDENCE_FLOOR),
+        )
+        converted_mask = _convert_mask(filled_valid_mask, conversion_weights)
         converted_confidence = _convert_confidence(
-            confidence,
+            effective_confidence,
             weights=conversion_weights,
             converted_mask=converted_mask,
         )

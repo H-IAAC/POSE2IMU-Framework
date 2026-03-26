@@ -350,6 +350,7 @@ def _project_pose3d_sequence_to_panel(
 ) -> tuple[np.ndarray, np.ndarray]:
     points_xyz = np.asarray(joint_positions_xyz, dtype=np.float32)
     confidence = np.asarray(joint_confidence, dtype=np.float32)
+    normalized_space = str(coordinate_space).strip().lower()
     valid_mask = np.isfinite(points_xyz).all(axis=2) & (confidence > 0.0)
     projected_points = np.full((points_xyz.shape[0], points_xyz.shape[1], 2), np.nan, dtype=np.float32)
     projected_depth = np.full(points_xyz.shape[:2], np.nan, dtype=np.float32)
@@ -357,7 +358,7 @@ def _project_pose3d_sequence_to_panel(
         return projected_points, projected_depth
 
     valid_points_xyz = points_xyz[valid_mask]
-    if str(coordinate_space).strip().lower() == "pose_lifter_aligned":
+    if normalized_space == "pose_lifter_aligned":
         valid_x = valid_points_xyz[:, 0]
         valid_depth = valid_points_xyz[:, 1]
         valid_height = valid_points_xyz[:, 2]
@@ -376,7 +377,16 @@ def _project_pose3d_sequence_to_panel(
         projected_depth[valid_mask] = valid_depth
         return projected_points, projected_depth
 
-    centered_points = points_xyz - valid_points_xyz.mean(axis=0, dtype=np.float32)
+    display_points_xyz = points_xyz
+    if normalized_space == "body_metric_local":
+        display_points_xyz = np.asarray(points_xyz, dtype=np.float32).copy()
+        # In body_metric_local, +X is the subject's anatomical right and +Z is forward.
+        # Rotate the debug camera 180 degrees around the vertical axis so the panel
+        # shows the subject from the front instead of from the back.
+        display_points_xyz[..., 0] *= -1.0
+        display_points_xyz[..., 2] *= -1.0
+
+    centered_points = display_points_xyz - display_points_xyz[valid_mask].mean(axis=0, dtype=np.float32)
     rotated_points = centered_points @ _rotation_matrix_y(np.deg2rad(28.0)).T
     rotated_points = rotated_points @ _rotation_matrix_x(np.deg2rad(-18.0)).T
 
@@ -392,7 +402,10 @@ def _project_pose3d_sequence_to_panel(
     projected_points[..., 0] = ((projected_xy[..., 0] - center_xy[0]) * scale) + (float(width) * 0.5)
     projected_points[..., 1] = ((projected_xy[..., 1] - center_xy[1]) * scale) + (float(height) * 0.5)
     projected_points[~valid_mask] = np.nan
-    projected_depth[valid_mask] = rotated_points[..., 2][valid_mask]
+    depth_values = rotated_points[..., 2]
+    if normalized_space == "body_metric_local":
+        depth_values = -depth_values
+    projected_depth[valid_mask] = depth_values[valid_mask]
     return projected_points, projected_depth
 
 

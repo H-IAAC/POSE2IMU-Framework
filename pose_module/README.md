@@ -8,6 +8,7 @@ Este modulo documenta como rodar o pipeline de pose implementado ate agora. No m
 - `5.4 pose2d_cleaner`
 - `5.5 motionbert_3d_lifter`
 - `5.6 skeleton_mapper`
+- `5.7 metric_normalizer`
 
 ## O que esta implementado
 
@@ -21,11 +22,12 @@ Fluxo atual:
 - limpeza temporal 2D, remocao de outliers e adaptacao para `motionbert17`
 - lifting 3D por janelas deslizantes no contrato `MotionBERT`
 - mapeamento estrito `MB17 -> IMUGPT22`
+- normalizacao metrica local no referencial do corpo
 - exportacao de `pose/pose2d.npz`, `pose/pose3d.npz` e artefatos auxiliares
 
 ## Estrutura do modulo
 
-- `pose_module/pipeline.py`: orquestracao das etapas 5.1 a 5.6
+- `pose_module/pipeline.py`: orquestracao das etapas 5.1 a 5.7
 - `pose_module/interfaces.py`: contratos e estruturas canonicas
 - `pose_module/model_registry.py`: resolucao dos modelos locais em `pose_module/checkpoints/`
 - `pose_module/openmmlab_runtime.py`: selecao compartilhada do Python do env `openmmlab`
@@ -38,6 +40,7 @@ Fluxo atual:
 - `pose_module/motionbert/adapter.py`: janelas deslizantes e contrato tensorial `[B, T, J, C]`
 - `pose_module/motionbert/lifter.py`: lifting 3D temporal e exportacao de artefatos da etapa 5.5
 - `pose_module/processing/skeleton_mapper.py`: expansao deterministica de `motionbert17` para `IMUGPT22`
+- `pose_module/processing/metric_normalizer.py`: referencial corporal + escala antropometrica + suavizacao da etapa 5.7
 - `pose_module/processing/temporal_filters.py`: interpolacao e suavizacao temporal
 - `pose_module/processing/quality.py`: consolidacao de relatorios
 - `pose_module/robot_emotions/extractor.py`: scanner e export especificos do dataset
@@ -167,7 +170,7 @@ Selecao de ambiente do backend (`--env-name`):
 - `current`: usa somente o Python atual
 - `<nome_do_env_conda>`: usa somente o Python do env Conda informado
 
-### 7. Rodar o pipeline completo 5.1 a 5.6 pela CLI
+### 7. Rodar o pipeline completo 5.1 a 5.7 pela CLI
 
 O comando abaixo executa o fluxo completo com MotionBERT:
 
@@ -205,7 +208,7 @@ Para gerar apenas o debug 3D, sem os videos 2D:
   --debug-3d
 ```
 
-Esse fluxo gera os artefatos 3D das etapas `5.5` e `5.6`, com `pose3d.npz` no contrato final `IMUGPT22`, `pose3d_motionbert17.npz` preservando a saida MB17 bruta do MotionBERT, `3d_keypoints_raw.npy`, `motionbert_run.json` e, quando habilitado, um debug side-by-side com 2D clean + 3D raw.
+Esse fluxo gera os artefatos 3D das etapas `5.5`, `5.6` e `5.7`, com `pose3d.npz` no contrato final `IMUGPT22` em `body_metric_local`, `pose3d_motionbert17.npz` preservando a saida MB17 bruta do MotionBERT, `3d_keypoints_raw.npy`, `3d_keypoints_metric.npy`, `motionbert_run.json` e, quando habilitado, um debug side-by-side com 2D clean + 3D raw/final.
 
 ## Saidas geradas
 
@@ -260,11 +263,12 @@ Na raiz da exportacao:
 - `pose3d_manifest.jsonl`
 - `pose3d_summary.json`
 
-Quando voce roda o pipeline completo ate a etapa `5.6`, os arquivos abaixo sao adicionados ao diretorio `pose/`:
+Quando voce roda o pipeline completo ate a etapa `5.7`, os arquivos abaixo sao adicionados ao diretorio `pose/`:
 
 - `pose/pose3d.npz`
 - `pose/pose3d_motionbert17.npz`
 - `pose/3d_keypoints_raw.npy`
+- `pose/3d_keypoints_metric.npy`
 - `pose/motionbert_run.json`
 - `pose/debug_overlay_pose3d_raw.mp4` quando `save_debug=true` ou `save_debug_3d=true`
 - `pose/debug_overlay_pose3d_imugpt22.mp4` quando `save_debug=true` ou `save_debug_3d=true`
@@ -299,6 +303,7 @@ No `pose/pose3d.npz`:
 - `joint_positions_xyz`: `np.ndarray[T, 22, 3]`
 - `joint_confidence`: `np.ndarray[T, 22]`
 - `skeleton_parents`: `np.ndarray[22]`
+- `coordinate_space`: `body_metric_local`
 
 No `pose/pose3d_motionbert17.npz`:
 
@@ -306,12 +311,13 @@ No `pose/pose3d_motionbert17.npz`:
 - `joint_confidence`: `np.ndarray[T, 17]`
 - `skeleton_parents`: `np.ndarray[17]`
 
-Nos artefatos auxiliares das etapas 5.5 e 5.6:
+Nos artefatos auxiliares das etapas 5.5, 5.6 e 5.7:
 
 - `3d_keypoints_raw.npy`: `np.ndarray[T, 17, 3]` em referencial de camera
+- `3d_keypoints_metric.npy`: `np.ndarray[T, 22, 3]` apos normalizacao metrica local e suavizacao temporal
 - `motionbert_run.json`: resumo do backend, janelas e qualidade do lifting 3D
 - `debug_overlay_pose3d_raw.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D raw do MotionBERT
-- `debug_overlay_pose3d_imugpt22.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D final mapeada para o esqueleto IMUGPT22
+- `debug_overlay_pose3d_imugpt22.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D final no esqueleto IMUGPT22 apos a etapa 5.7
 
 No comando `export-pose3d`, voce pode controlar os overlays separadamente com `--debug-2d` / `--no-debug-2d` e `--debug-3d` / `--no-debug-3d`.
 
@@ -331,7 +337,6 @@ No comando `export-pose3d`, voce pode controlar os overlays separadamente com `-
 - o fluxo padrao exporta todos os clipes encontrados nos dominios selecionados
 - para restringir a execucao, use `--clip-id` ou `--domains`
 - as proximas etapas do pipeline ainda nao foram implementadas aqui:
-  - `metric_normalizer`
   - `root_trajectory_estimator`
   - `ik_adapter`
   - `imusim_adapter`

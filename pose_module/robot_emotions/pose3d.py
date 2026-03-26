@@ -151,6 +151,7 @@ def _build_pose3d_manifest_entry(
         "pose2d_quality_report": dict(pipeline_result["pose2d_quality_report"]),
         "motionbert_quality_report": dict(pipeline_result["motionbert_quality_report"]),
         "skeleton_mapper_quality_report": dict(pipeline_result["skeleton_mapper_quality_report"]),
+        "metric_normalizer_quality_report": dict(pipeline_result["metric_normalization_quality_report"]),
         "artifacts": artifacts,
     }
 
@@ -182,30 +183,16 @@ def _build_pose3d_failure_entry(
         "video": dict(manifest_entry.get("video", {})),
         "quality_report": failure_quality,
         "artifacts": {
-            "backend_run_json_path": str((pose_dir / "backend_run.json").resolve())
-            if (pose_dir / "backend_run.json").exists()
-            else None,
-            "motionbert_run_json_path": str((pose_dir / "motionbert_run.json").resolve())
-            if (pose_dir / "motionbert_run.json").exists()
-            else None,
-            "pose2d_npz_path": str((pose_dir / "pose2d.npz").resolve())
-            if (pose_dir / "pose2d.npz").exists()
-            else None,
-            "pose3d_npz_path": str((pose_dir / "pose3d.npz").resolve())
-            if (pose_dir / "pose3d.npz").exists()
-            else None,
+            "backend_run_json_path": str((pose_dir / "backend_run.json").resolve()) if (pose_dir / "backend_run.json").exists() else None,
+            "motionbert_run_json_path": str((pose_dir / "motionbert_run.json").resolve()) if (pose_dir / "motionbert_run.json").exists() else None,
+            "pose2d_npz_path": str((pose_dir / "pose2d.npz").resolve()) if (pose_dir / "pose2d.npz").exists() else None,
+            "pose3d_npz_path": str((pose_dir / "pose3d.npz").resolve()) if (pose_dir / "pose3d.npz").exists() else None,
+            "pose3d_bvh_path": str((pose_dir / "pose3d.bvh").resolve()) if (pose_dir / "pose3d.bvh").exists() else None,
+            "pose3d_metric_keypoints_path": str((pose_dir / "3d_keypoints_metric.npy").resolve()) if (pose_dir / "3d_keypoints_metric.npy").exists() else None,
             "quality_report_json_path": str((pose_dir / "quality_report.json").resolve()),
-            "raw_prediction_json_path": str((pose_dir / "raw_predictions.json").resolve())
-            if (pose_dir / "raw_predictions.json").exists()
-            else None,
-            "debug_overlay_path": str((pose_dir / "debug_overlay.mp4").resolve())
-            if (pose_dir / "debug_overlay.mp4").exists()
-            else None,
-            "debug_overlay_pose3d_raw_path": str((pose_dir / "debug_overlay_pose3d_raw.mp4").resolve())
-            if (pose_dir / "debug_overlay_pose3d_raw.mp4").exists()
-            else None,
-            "debug_overlay_pose3d_imugpt22_path": str((pose_dir / "debug_overlay_pose3d_imugpt22.mp4").resolve())
-            if (pose_dir / "debug_overlay_pose3d_imugpt22.mp4").exists()
-            else None,
+            "raw_prediction_json_path": str((pose_dir / "raw_predictions.json").resolve()) if (pose_dir / "raw_predictions.json").exists() else None,
+            "debug_overlay_path": str((pose_dir / "debug_overlay.mp4").resolve()) if (pose_dir / "debug_overlay.mp4").exists() else None,
+            "debug_overlay_pose3d_raw_path": str((pose_dir / "debug_overlay_pose3d_raw.mp4").resolve()) if (pose_dir / "debug_overlay_pose3d_raw.mp4").exists() else None,
+            "debug_overlay_pose3d_imugpt22_path": str((pose_dir / "debug_overlay_pose3d_imugpt22.mp4").resolve()) if (pose_dir / "debug_overlay_pose3d_imugpt22.mp4").exists() else None,
         },
     }

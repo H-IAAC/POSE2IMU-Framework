@@ -18,12 +18,16 @@ from pose_module.motionbert.adapter import (
     merge_motionbert_window_predictions,
 )
 from pose_module.motionbert.lifter import (
-    _canonicalize_backend_prediction_array,
+    _convert_confidence,
+    _convert_mask,
     _fill_missing_keypoints_for_lifter,
+    _build_mb17_to_h36m_weights,
+    _canonicalize_backend_prediction_array,
     _resolve_backend_joint_names,
     run_motionbert_lifter,
 )
 from pose_module.pipeline import run_pose3d_pipeline
+from pose_module.processing.metric_normalizer import BODY_METRIC_LOCAL_COORDINATE_SPACE
 
 
 _MB17_BASE_POINTS = {
@@ -195,6 +199,40 @@ class MotionBERTAdapterTests(unittest.TestCase):
 
 
 class MotionBERTLifterTests(unittest.TestCase):
+    def test_imputed_motionbert_inputs_can_keep_low_positive_confidence_after_conversion(self) -> None:
+        sequence = _make_motionbert_sequence(5)
+        left_ankle_index = MOTIONBERT_17_JOINT_NAMES.index("left_ankle")
+        right_ankle_index = MOTIONBERT_17_JOINT_NAMES.index("right_ankle")
+
+        keypoints_xy = np.asarray(sequence.keypoints_xy, dtype=np.float32).copy()
+        confidence = np.asarray(sequence.confidence, dtype=np.float32).copy()
+        keypoints_xy[2, left_ankle_index] = np.asarray([np.nan, np.nan], dtype=np.float32)
+        confidence[2, left_ankle_index] = 0.0
+        keypoints_xy[2, right_ankle_index] = np.asarray([np.nan, np.nan], dtype=np.float32)
+        confidence[2, right_ankle_index] = 0.0
+
+        filled = _fill_missing_keypoints_for_lifter(keypoints_xy, confidence)
+        original_valid_mask = np.isfinite(keypoints_xy[2]).all(axis=1) & (confidence[2] > 0.0)
+        filled_valid_mask = np.isfinite(filled[2]).all(axis=1)
+        effective_confidence = confidence[2].copy()
+        imputed_mask = filled_valid_mask & ~original_valid_mask
+        effective_confidence[imputed_mask] = np.maximum(effective_confidence[imputed_mask], np.float32(0.05))
+
+        weights = _build_mb17_to_h36m_weights()
+        converted_mask = _convert_mask(filled_valid_mask, weights)
+        converted_confidence = _convert_confidence(
+            effective_confidence,
+            weights=weights,
+            converted_mask=converted_mask,
+        )
+
+        left_h36m_foot_index = _H36M_17_JOINT_NAMES.index("left_foot")
+        right_h36m_foot_index = _H36M_17_JOINT_NAMES.index("right_foot")
+        self.assertTrue(bool(converted_mask[left_h36m_foot_index]))
+        self.assertTrue(bool(converted_mask[right_h36m_foot_index]))
+        self.assertGreater(float(converted_confidence[left_h36m_foot_index]), 0.0)
+        self.assertGreater(float(converted_confidence[right_h36m_foot_index]), 0.0)
+
     def test_run_motionbert_lifter_exports_pose3d_artifacts(self) -> None:
         sequence = _make_motionbert_sequence(90)
 
@@ -258,10 +296,19 @@ class Pose3DPipelineTests(unittest.TestCase):
             self.assertEqual(result["quality_report"]["motionbert_backend_name"], "unit_test_motionbert")
             self.assertTrue(Path(result["artifacts"]["pose3d_npz_path"]).exists())
             self.assertTrue(Path(result["artifacts"]["motionbert_run_json_path"]).exists())
+            self.assertTrue(Path(result["artifacts"]["pose3d_metric_keypoints_path"]).exists())
+            self.assertTrue(Path(result["artifacts"]["pose3d_bvh_path"]).exists())
             self.assertEqual(result["pose_sequence"].joint_names_3d, list(IMUGPT_22_JOINT_NAMES))
             self.assertEqual(result["motionbert_pose_sequence"].joint_names_3d, list(MOTIONBERT_17_JOINT_NAMES))
+            self.assertEqual(result["skeleton_mapped_pose_sequence"].joint_names_3d, list(IMUGPT_22_JOINT_NAMES))
+            self.assertEqual(result["pose_sequence"].coordinate_space, BODY_METRIC_LOCAL_COORDINATE_SPACE)
             self.assertTrue(Path(result["artifacts"]["pose3d_motionbert17_npz_path"]).exists())
             self.assertTrue(result["quality_report"]["skeleton_mapping_ok"])
+            self.assertTrue(result["quality_report"]["metric_pose_ok"])
+            self.assertEqual(
+                result["metric_normalization_quality_report"]["coordinate_space"],
+                BODY_METRIC_LOCAL_COORDINATE_SPACE,
+            )
 
     def test_run_pose3d_pipeline_exports_side_by_side_raw_3d_debug_video(self) -> None:
         sequence = _make_motionbert_sequence(24)
@@ -367,9 +414,10 @@ class Pose3DPipelineTests(unittest.TestCase):
             )
             self.assertEqual(len(render_calls), 2)
             self.assertEqual(render_calls[0]["coordinate_space"], "pose_lifter_aligned")
-            self.assertEqual(render_calls[1]["coordinate_space"], "pose_lifter_aligned")
+            self.assertEqual(render_calls[1]["coordinate_space"], BODY_METRIC_LOCAL_COORDINATE_SPACE)
             self.assertEqual(mocked_render.call_count, 2)
             self.assertEqual(mocked_pose2d_pipeline.call_args.kwargs["save_debug"], False)
+            self.assertTrue(Path(result["artifacts"]["pose3d_metric_keypoints_path"]).exists())
 
     def test_project_pose3d_pose_lifter_aligned_flips_horizontal_axis_to_match_video_view(self) -> None:
         joint_positions_xyz = np.asarray(
@@ -387,6 +435,24 @@ class Pose3DPipelineTests(unittest.TestCase):
         )
 
         self.assertGreater(float(projected_points[0, 0, 0]), float(projected_points[0, 1, 0]))
+
+    def test_project_pose3d_body_metric_local_flips_horizontal_axis_to_show_front_view(self) -> None:
+        joint_positions_xyz = np.asarray(
+            [[[-1.0, 0.0, 0.2], [1.0, 0.0, 0.2], [0.0, 0.0, 0.4], [0.0, 0.0, -0.4]]],
+            dtype=np.float32,
+        )
+        joint_confidence = np.ones((1, 4), dtype=np.float32)
+
+        projected_points, projected_depth = _project_pose3d_sequence_to_panel(
+            joint_positions_xyz,
+            joint_confidence,
+            width=200,
+            height=100,
+            coordinate_space="body_metric_local",
+        )
+
+        self.assertGreater(float(projected_points[0, 0, 0]), float(projected_points[0, 1, 0]))
+        self.assertGreater(float(projected_depth[0, 2]), float(projected_depth[0, 3]))
 
     def test_fill_missing_keypoints_for_lifter_replaces_nan_gaps_with_temporal_track(self) -> None:
         sequence = _make_motionbert_sequence(5)

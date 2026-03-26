@@ -109,12 +109,15 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             "pose2d_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "motionbert_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "skeleton_mapper_quality_report": {"clip_id": record.clip_id, "status": "ok", "skeleton_mapping_ok": True},
+            "metric_normalization_quality_report": {"clip_id": record.clip_id, "status": "ok", "metric_pose_ok": True},
             "track_report": {"status": "ok"},
             "backend_run": {"status": "ok"},
             "motionbert_run": {"status": "ok", "backend": {"name": "mmpose_motionbert"}},
             "artifacts": {
                 "pose2d_npz_path": "/tmp/fake_pose2d.npz",
                 "pose3d_npz_path": "/tmp/fake_pose3d.npz",
+                "pose3d_bvh_path": "/tmp/fake_pose3d.bvh",
+                "pose3d_metric_keypoints_path": "/tmp/fake_3d_keypoints_metric.npy",
                 "motionbert_run_json_path": "/tmp/fake_motionbert_run.json",
                 "debug_overlay_pose3d_raw_path": "/tmp/fake_debug_overlay_pose3d_raw.mp4",
                 "debug_overlay_pose3d_imugpt22_path": "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
@@ -151,6 +154,11 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             self.assertEqual(manifest_entries[0]["pose3d"]["num_joints"], len(IMUGPT_22_JOINT_NAMES))
             self.assertEqual(manifest_entries[0]["artifacts"]["motionbert_run_json_path"], "/tmp/fake_motionbert_run.json")
             self.assertEqual(
+                manifest_entries[0]["artifacts"]["pose3d_metric_keypoints_path"],
+                "/tmp/fake_3d_keypoints_metric.npy",
+            )
+            self.assertEqual(manifest_entries[0]["artifacts"]["pose3d_bvh_path"], "/tmp/fake_pose3d.bvh")
+            self.assertEqual(
                 manifest_entries[0]["artifacts"]["debug_overlay_pose3d_raw_path"],
                 "/tmp/fake_debug_overlay_pose3d_raw.mp4",
             )
@@ -159,6 +167,7 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
                 "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
             )
             self.assertTrue(manifest_entries[0]["skeleton_mapper_quality_report"]["skeleton_mapping_ok"])
+            self.assertTrue(manifest_entries[0]["metric_normalizer_quality_report"]["metric_pose_ok"])
             mocked_pipeline.assert_called_once()
 
     def test_run_robot_emotions_pose3d_counts_warning_without_marking_failure(self) -> None:
@@ -175,12 +184,15 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             "pose2d_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "motionbert_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "skeleton_mapper_quality_report": {"clip_id": record.clip_id, "status": "ok", "skeleton_mapping_ok": True},
+            "metric_normalization_quality_report": {"clip_id": record.clip_id, "status": "ok", "metric_pose_ok": True},
             "track_report": {"status": "ok"},
             "backend_run": {"status": "ok"},
             "motionbert_run": {"status": "ok", "backend": {"name": "mmpose_motionbert"}},
             "artifacts": {
                 "pose2d_npz_path": "/tmp/fake_pose2d.npz",
                 "pose3d_npz_path": "/tmp/fake_pose3d.npz",
+                "pose3d_bvh_path": "/tmp/fake_pose3d.bvh",
+                "pose3d_metric_keypoints_path": "/tmp/fake_3d_keypoints_metric.npy",
                 "motionbert_run_json_path": "/tmp/fake_motionbert_run.json",
                 "debug_overlay_pose3d_raw_path": "/tmp/fake_debug_overlay_pose3d_raw.mp4",
                 "debug_overlay_pose3d_imugpt22_path": "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
