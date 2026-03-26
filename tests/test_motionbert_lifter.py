@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 from pose_module.interfaces import (
+    IMUGPT_22_JOINT_NAMES,
     MOTIONBERT_17_JOINT_NAMES,
     MOTIONBERT_17_PARENT_INDICES,
     PoseSequence2D,
@@ -257,7 +258,10 @@ class Pose3DPipelineTests(unittest.TestCase):
             self.assertEqual(result["quality_report"]["motionbert_backend_name"], "unit_test_motionbert")
             self.assertTrue(Path(result["artifacts"]["pose3d_npz_path"]).exists())
             self.assertTrue(Path(result["artifacts"]["motionbert_run_json_path"]).exists())
-            self.assertEqual(result["pose_sequence"].joint_names_3d, list(MOTIONBERT_17_JOINT_NAMES))
+            self.assertEqual(result["pose_sequence"].joint_names_3d, list(IMUGPT_22_JOINT_NAMES))
+            self.assertEqual(result["motionbert_pose_sequence"].joint_names_3d, list(MOTIONBERT_17_JOINT_NAMES))
+            self.assertTrue(Path(result["artifacts"]["pose3d_motionbert17_npz_path"]).exists())
+            self.assertTrue(result["quality_report"]["skeleton_mapping_ok"])
 
     def test_run_pose3d_pipeline_exports_side_by_side_raw_3d_debug_video(self) -> None:
         sequence = _make_motionbert_sequence(24)
@@ -356,10 +360,15 @@ class Pose3DPipelineTests(unittest.TestCase):
                 )
 
             self.assertTrue(Path(result["artifacts"]["debug_overlay_pose3d_raw_path"]).exists())
-            self.assertEqual(rendered_outputs, ["debug_overlay_pose3d_raw.mp4"])
-            self.assertEqual(len(render_calls), 1)
+            self.assertTrue(Path(result["artifacts"]["debug_overlay_pose3d_imugpt22_path"]).exists())
+            self.assertEqual(
+                rendered_outputs,
+                ["debug_overlay_pose3d_raw.mp4", "debug_overlay_pose3d_imugpt22.mp4"],
+            )
+            self.assertEqual(len(render_calls), 2)
             self.assertEqual(render_calls[0]["coordinate_space"], "pose_lifter_aligned")
-            self.assertEqual(mocked_render.call_count, 1)
+            self.assertEqual(render_calls[1]["coordinate_space"], "pose_lifter_aligned")
+            self.assertEqual(mocked_render.call_count, 2)
             self.assertEqual(mocked_pose2d_pipeline.call_args.kwargs["save_debug"], False)
 
     def test_project_pose3d_pose_lifter_aligned_flips_horizontal_axis_to_match_video_view(self) -> None:

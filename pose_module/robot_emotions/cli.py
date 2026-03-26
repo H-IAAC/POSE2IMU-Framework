@@ -99,7 +99,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     export_pose3d_parser = subparsers.add_parser(
         "export-pose3d",
-        help="Export stage-5.5 pose3d artifacts alongside the extracted IMU artifacts.",
+        help="Export stage-5.6 pose3d artifacts alongside the extracted IMU artifacts.",
     )
     _add_pose_export_arguments(export_pose3d_parser, include_motionbert_arguments=True)
     return parser

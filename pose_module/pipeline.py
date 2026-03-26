@@ -14,10 +14,12 @@ from pose_module.export.debug_video import (
 )
 from pose_module.interfaces import Pose2DJob, PoseSequence2D
 from pose_module.io.cache import write_json_file
+from pose_module.motionbert.adapter import write_pose_sequence3d_npz
 from pose_module.motionbert.lifter import MotionBERTPredictor, run_motionbert_lifter
 from pose_module.io.video_loader import frame_indices_to_timestamps, select_frame_indices
 from pose_module.processing.cleaner2d import clean_pose_sequence2d
-from pose_module.processing.quality import merge_stage53_quality_reports, merge_stage55_quality_reports
+from pose_module.processing.quality import merge_stage53_quality_reports, merge_stage56_quality_reports
+from pose_module.processing.skeleton_mapper import map_pose_sequence_to_imugpt22
 from pose_module.tracking.person_selector import build_person_track_report, link_person_tracks
 from pose_module.vitpose.adapter import (
     canonicalize_pose_sequence2d,
@@ -217,12 +219,21 @@ def run_pose3d_pipeline(
         image_width=_optional_int(None if video_metadata is None else video_metadata.get("width")),
         image_height=_optional_int(None if video_metadata is None else video_metadata.get("height")),
     )
+    raw_pose_sequence_3d = lifter_result["pose_sequence"]
+    raw_motionbert_pose3d_path = output_dir / "pose3d_motionbert17.npz"
+    write_pose_sequence3d_npz(raw_pose_sequence_3d, raw_motionbert_pose3d_path)
+    mapped_pose_sequence_3d, mapper_quality, mapper_artifacts = map_pose_sequence_to_imugpt22(
+        raw_pose_sequence_3d,
+    )
+    write_pose_sequence3d_npz(mapped_pose_sequence_3d, output_dir / "pose3d.npz")
 
-    merged_quality = merge_stage55_quality_reports(
+    merged_quality = merge_stage56_quality_reports(
         pose2d_quality=pose2d_result["quality_report"],
         lifter_quality=lifter_result["quality_report"],
+        mapper_quality=mapper_quality,
     )
     pose3d_debug_overlay_path = None
+    pose3d_imugpt22_debug_overlay_path = None
     if save_debug_3d:
         cleaner_artifacts = pose2d_result["cleaner_artifacts"]
         clean_keypoints_xy_pixels = _restore_clean_pose_pixels(
@@ -240,30 +251,52 @@ def run_pose3d_pipeline(
             ),
             pose_sequence_2d=pose2d_result["pose_sequence"],
             clean_keypoints_xy=clean_keypoints_xy_pixels,
-            pose_sequence_3d=lifter_result["pose_sequence"],
+            pose_sequence_3d=raw_pose_sequence_3d,
+            overlay_variant="pose3d_raw",
+            merged_quality=merged_quality,
+        )
+        pose3d_imugpt22_debug_overlay_path = _render_pose3d_debug_overlay(
+            video_path=str(video_path),
+            output_path=resolve_debug_overlay_variant_path(
+                output_dir,
+                variant="pose3d_imugpt22",
+                enabled=True,
+            ),
+            pose_sequence_2d=pose2d_result["pose_sequence"],
+            clean_keypoints_xy=clean_keypoints_xy_pixels,
+            pose_sequence_3d=mapped_pose_sequence_3d,
+            overlay_variant="pose3d_imugpt22",
             merged_quality=merged_quality,
         )
     write_json_file(merged_quality, output_dir / "quality_report.json")
 
     artifacts = dict(pose2d_result["artifacts"])
     artifacts.update(lifter_result["artifacts"])
+    artifacts["pose3d_motionbert17_npz_path"] = str(raw_motionbert_pose3d_path.resolve())
+    artifacts["pose3d_npz_path"] = str((output_dir / "pose3d.npz").resolve())
     artifacts["quality_report_json_path"] = str((output_dir / "quality_report.json").resolve())
     artifacts["debug_overlay_pose3d_raw_path"] = (
         None if pose3d_debug_overlay_path is None else str(pose3d_debug_overlay_path)
+    )
+    artifacts["debug_overlay_pose3d_imugpt22_path"] = (
+        None if pose3d_imugpt22_debug_overlay_path is None else str(pose3d_imugpt22_debug_overlay_path)
     )
 
     return {
         "clip_id": str(clip_id),
         "pose2d_result": pose2d_result,
-        "pose_sequence": lifter_result["pose_sequence"],
+        "pose_sequence": mapped_pose_sequence_3d,
+        "motionbert_pose_sequence": raw_pose_sequence_3d,
         "pose_sequence_2d": pose2d_result["pose_sequence"],
         "raw_pose_sequence_2d": pose2d_result["raw_pose_sequence"],
         "quality_report": merged_quality,
         "pose2d_quality_report": pose2d_result["quality_report"],
         "motionbert_quality_report": lifter_result["quality_report"],
+        "skeleton_mapper_quality_report": mapper_quality,
         "track_report": pose2d_result["track_report"],
         "backend_run": pose2d_result["backend_run"],
         "motionbert_run": lifter_result["run_report"],
+        "skeleton_mapper_artifacts": mapper_artifacts,
         "artifacts": artifacts,
     }
 
@@ -365,6 +398,7 @@ def _render_pose3d_debug_overlay(
     pose_sequence_2d: Any,
     clean_keypoints_xy: np.ndarray,
     pose_sequence_3d: Any,
+    overlay_variant: str,
     merged_quality: Dict[str, Any],
 ) -> Path | None:
     if output_path is None:
@@ -387,7 +421,7 @@ def _render_pose3d_debug_overlay(
         )
     except Exception as exc:
         notes = list(merged_quality.get("notes", []))
-        notes.append(f"pose3d_raw_debug_overlay_failed:{exc}")
+        notes.append(f"{str(overlay_variant)}_debug_overlay_failed:{exc}")
         merged_quality["notes"] = list(dict.fromkeys(str(value) for value in notes))
         if merged_quality.get("status") == "ok":
             merged_quality["status"] = "warning"

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from pose_module.interfaces import MOTIONBERT_17_JOINT_NAMES, MOTIONBERT_17_PARENT_INDICES, PoseSequence3D
+from pose_module.interfaces import IMUGPT_22_JOINT_NAMES, IMUGPT_22_PARENT_INDICES, PoseSequence3D
 from pose_module.robot_emotions.cli import main as robot_emotions_cli_main
 from pose_module.robot_emotions.extractor import RobotEmotionsClipRecord
 from pose_module.robot_emotions.pose3d import run_robot_emotions_pose3d
@@ -31,25 +31,40 @@ def _make_record(clip_id: str) -> RobotEmotionsClipRecord:
 
 def _make_pose3d_sequence() -> PoseSequence3D:
     sequence_2d = _make_motionbert_sequence(12)
-    joint_positions_xyz = np.zeros((sequence_2d.num_frames, len(MOTIONBERT_17_JOINT_NAMES), 3), dtype=np.float32)
-    joint_positions_xyz[..., :2] = np.asarray(sequence_2d.keypoints_xy, dtype=np.float32)
+    joint_positions_xyz = np.zeros((sequence_2d.num_frames, len(IMUGPT_22_JOINT_NAMES), 3), dtype=np.float32)
+    joint_positions_xyz[..., 0] = np.linspace(
+        -0.4,
+        0.4,
+        len(IMUGPT_22_JOINT_NAMES),
+        dtype=np.float32,
+    )[None, :]
+    joint_positions_xyz[..., 1] = np.linspace(
+        0.8,
+        -0.8,
+        len(IMUGPT_22_JOINT_NAMES),
+        dtype=np.float32,
+    )[None, :]
     joint_positions_xyz[..., 2] = np.linspace(
         0.0,
         1.0,
-        sequence_2d.num_frames * len(MOTIONBERT_17_JOINT_NAMES),
+        sequence_2d.num_frames * len(IMUGPT_22_JOINT_NAMES),
         dtype=np.float32,
-    ).reshape(sequence_2d.num_frames, len(MOTIONBERT_17_JOINT_NAMES))
+    ).reshape(sequence_2d.num_frames, len(IMUGPT_22_JOINT_NAMES))
     return PoseSequence3D(
         clip_id=str(sequence_2d.clip_id),
         fps=sequence_2d.fps,
         fps_original=sequence_2d.fps_original,
-        joint_names_3d=list(MOTIONBERT_17_JOINT_NAMES),
+        joint_names_3d=list(IMUGPT_22_JOINT_NAMES),
         joint_positions_xyz=joint_positions_xyz,
-        joint_confidence=np.asarray(sequence_2d.confidence, dtype=np.float32),
-        skeleton_parents=list(MOTIONBERT_17_PARENT_INDICES),
+        joint_confidence=np.full(
+            (sequence_2d.num_frames, len(IMUGPT_22_JOINT_NAMES)),
+            0.95,
+            dtype=np.float32,
+        ),
+        skeleton_parents=list(IMUGPT_22_PARENT_INDICES),
         frame_indices=np.asarray(sequence_2d.frame_indices, dtype=np.int32),
         timestamps_sec=np.asarray(sequence_2d.timestamps_sec, dtype=np.float32),
-        source="vitpose-b_motionbert17_clean_mmpose_motionbert",
+        source="vitpose-b_motionbert17_clean_mmpose_motionbert_imugpt22",
         coordinate_space="camera",
     )
 
@@ -93,6 +108,7 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             "quality_report": {"clip_id": record.clip_id, "status": "ok", "notes": []},
             "pose2d_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "motionbert_quality_report": {"clip_id": record.clip_id, "status": "ok"},
+            "skeleton_mapper_quality_report": {"clip_id": record.clip_id, "status": "ok", "skeleton_mapping_ok": True},
             "track_report": {"status": "ok"},
             "backend_run": {"status": "ok"},
             "motionbert_run": {"status": "ok", "backend": {"name": "mmpose_motionbert"}},
@@ -101,6 +117,7 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
                 "pose3d_npz_path": "/tmp/fake_pose3d.npz",
                 "motionbert_run_json_path": "/tmp/fake_motionbert_run.json",
                 "debug_overlay_pose3d_raw_path": "/tmp/fake_debug_overlay_pose3d_raw.mp4",
+                "debug_overlay_pose3d_imugpt22_path": "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
             },
         }
 
@@ -131,12 +148,17 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             ]
             self.assertEqual(len(manifest_entries), 1)
             self.assertEqual(manifest_entries[0]["clip_id"], record.clip_id)
-            self.assertEqual(manifest_entries[0]["pose3d"]["num_joints"], len(MOTIONBERT_17_JOINT_NAMES))
+            self.assertEqual(manifest_entries[0]["pose3d"]["num_joints"], len(IMUGPT_22_JOINT_NAMES))
             self.assertEqual(manifest_entries[0]["artifacts"]["motionbert_run_json_path"], "/tmp/fake_motionbert_run.json")
             self.assertEqual(
                 manifest_entries[0]["artifacts"]["debug_overlay_pose3d_raw_path"],
                 "/tmp/fake_debug_overlay_pose3d_raw.mp4",
             )
+            self.assertEqual(
+                manifest_entries[0]["artifacts"]["debug_overlay_pose3d_imugpt22_path"],
+                "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
+            )
+            self.assertTrue(manifest_entries[0]["skeleton_mapper_quality_report"]["skeleton_mapping_ok"])
             mocked_pipeline.assert_called_once()
 
     def test_run_robot_emotions_pose3d_counts_warning_without_marking_failure(self) -> None:
@@ -152,6 +174,7 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
             "quality_report": {"clip_id": record.clip_id, "status": "warning", "notes": ["example_warning"]},
             "pose2d_quality_report": {"clip_id": record.clip_id, "status": "ok"},
             "motionbert_quality_report": {"clip_id": record.clip_id, "status": "ok"},
+            "skeleton_mapper_quality_report": {"clip_id": record.clip_id, "status": "ok", "skeleton_mapping_ok": True},
             "track_report": {"status": "ok"},
             "backend_run": {"status": "ok"},
             "motionbert_run": {"status": "ok", "backend": {"name": "mmpose_motionbert"}},
@@ -160,6 +183,7 @@ class RobotEmotionsPose3DTests(unittest.TestCase):
                 "pose3d_npz_path": "/tmp/fake_pose3d.npz",
                 "motionbert_run_json_path": "/tmp/fake_motionbert_run.json",
                 "debug_overlay_pose3d_raw_path": "/tmp/fake_debug_overlay_pose3d_raw.mp4",
+                "debug_overlay_pose3d_imugpt22_path": "/tmp/fake_debug_overlay_pose3d_imugpt22.mp4",
             },
         }
 

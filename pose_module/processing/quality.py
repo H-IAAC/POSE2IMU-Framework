@@ -102,3 +102,66 @@ def merge_stage55_quality_reports(
         }
     )
     return merged
+
+
+def merge_stage56_quality_reports(
+    *,
+    pose2d_quality: Mapping[str, Any],
+    lifter_quality: Mapping[str, Any],
+    mapper_quality: Mapping[str, Any],
+) -> Dict[str, Any]:
+    pose2d_quality = dict(pose2d_quality)
+    lifter_quality = dict(lifter_quality)
+    mapper_quality = dict(mapper_quality)
+
+    notes = []
+    notes.extend([str(value) for value in pose2d_quality.get("notes", [])])
+    notes.extend([str(value) for value in lifter_quality.get("notes", [])])
+    notes.extend([str(value) for value in mapper_quality.get("notes", [])])
+
+    status = "ok"
+    if (
+        pose2d_quality.get("status") == "fail"
+        or lifter_quality.get("status") == "fail"
+        or mapper_quality.get("status") == "fail"
+    ):
+        status = "fail"
+    elif (
+        pose2d_quality.get("status") == "warning"
+        or lifter_quality.get("status") == "warning"
+        or mapper_quality.get("status") == "warning"
+        or len(notes) > 0
+    ):
+        status = "warning"
+
+    merged = dict(pose2d_quality)
+    merged.update(
+        {
+            "status": str(status),
+            "pose3d_num_frames": mapper_quality.get("num_frames", lifter_quality.get("num_frames")),
+            "pose3d_num_joints": mapper_quality.get("num_joints", lifter_quality.get("num_joints")),
+            "pose3d_coordinate_space": mapper_quality.get(
+                "coordinate_space",
+                lifter_quality.get("coordinate_space"),
+            ),
+            "pose3d_joint_format": mapper_quality.get(
+                "output_joint_format",
+                lifter_quality.get("output_joint_format"),
+            ),
+            "motionbert_output_joint_format": lifter_quality.get("output_joint_format"),
+            "motionbert_backend_name": lifter_quality.get("backend_name"),
+            "motionbert_window_size": lifter_quality.get("window_size"),
+            "motionbert_window_overlap": lifter_quality.get("window_overlap"),
+            "motionbert_num_windows": lifter_quality.get("num_windows"),
+            "motionbert_input_channels": lifter_quality.get("input_channels"),
+            "depth_variation": lifter_quality.get("depth_variation"),
+            "window_coverage_ratio": lifter_quality.get("window_coverage_ratio"),
+            "skeleton_mapping_ok": mapper_quality.get("skeleton_mapping_ok"),
+            "skeleton_mapper_input_joint_format": mapper_quality.get("input_joint_format"),
+            "skeleton_mapper_output_joint_format": mapper_quality.get("output_joint_format"),
+            "handedness_swapped_frames": mapper_quality.get("handedness_swapped_frames"),
+            "forward_vector_fallback_frames": mapper_quality.get("forward_vector_fallback_frames"),
+            "notes": list(dict.fromkeys(notes)),
+        }
+    )
+    return merged

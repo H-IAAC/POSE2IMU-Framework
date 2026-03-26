@@ -150,6 +150,7 @@ def _build_pose3d_manifest_entry(
         "quality_report": quality_report,
         "pose2d_quality_report": dict(pipeline_result["pose2d_quality_report"]),
         "motionbert_quality_report": dict(pipeline_result["motionbert_quality_report"]),
+        "skeleton_mapper_quality_report": dict(pipeline_result["skeleton_mapper_quality_report"]),
         "artifacts": artifacts,
     }
 
@@ -202,6 +203,9 @@ def _build_pose3d_failure_entry(
             else None,
             "debug_overlay_pose3d_raw_path": str((pose_dir / "debug_overlay_pose3d_raw.mp4").resolve())
             if (pose_dir / "debug_overlay_pose3d_raw.mp4").exists()
+            else None,
+            "debug_overlay_pose3d_imugpt22_path": str((pose_dir / "debug_overlay_pose3d_imugpt22.mp4").resolve())
+            if (pose_dir / "debug_overlay_pose3d_imugpt22.mp4").exists()
             else None,
         },
     }

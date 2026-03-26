@@ -69,6 +69,56 @@ MOTIONBERT_17_PARENT_INDICES: Tuple[int, ...] = (
     14,
 )
 
+IMUGPT_22_JOINT_NAMES: Tuple[str, ...] = (
+    "Pelvis",
+    "Left_hip",
+    "Right_hip",
+    "Spine1",
+    "Left_knee",
+    "Right_knee",
+    "Spine2",
+    "Left_ankle",
+    "Right_ankle",
+    "Spine3",
+    "Left_foot",
+    "Right_foot",
+    "Neck",
+    "Left_collar",
+    "Right_collar",
+    "Head",
+    "Left_shoulder",
+    "Right_shoulder",
+    "Left_elbow",
+    "Right_elbow",
+    "Left_wrist",
+    "Right_wrist",
+)
+
+IMUGPT_22_PARENT_INDICES: Tuple[int, ...] = (
+    -1,
+    0,
+    0,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    9,
+    9,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    19,
+)
+
 
 @dataclass(frozen=True)
 class Pose2DJob:
