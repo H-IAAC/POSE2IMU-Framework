@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -9,7 +11,7 @@ from typing import Any, Dict, List, Sequence
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from pose_module.interfaces import IMUGPT_22_JOINT_NAMES, IMUGPT_22_PARENT_INDICES, PoseSequence3D
+from pose_module.interfaces import PoseSequence3D
 
 _DEFAULT_FPS = 20.0
 _EPSILON = 1e-6
@@ -23,7 +25,7 @@ def export_pose_sequence3d_to_bvh(
 ) -> Dict[str, Any]:
     """Export an IMUGPT22 pose sequence to BVH for interactive viewing."""
 
-    _validate_bvh_export_sequence(sequence)
+    joint_names, parents, root_index = _validate_bvh_export_sequence(sequence)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,27 +37,28 @@ def export_pose_sequence3d_to_bvh(
     else:
         ground_offset_m = 0.0
 
-    parents = [int(parent) for parent in IMUGPT_22_PARENT_INDICES]
     children = _build_children_list(parents)
     offsets = _estimate_rest_offsets(joint_positions_xyz, parents)
-    traversal_order = _collect_depth_first_order(children, root_index=0)
+    traversal_order = _collect_depth_first_order(children, root_index=root_index)
     local_rotations_zyx = _estimate_local_euler_rotations_zyx(
         joint_positions_xyz,
         offsets,
         parents,
         children,
         traversal_order,
+        root_index=root_index,
     )
     fps = _resolve_sequence_fps(sequence)
     _write_bvh_file(
         output_path=output_path,
-        joint_names=list(IMUGPT_22_JOINT_NAMES),
+        joint_names=joint_names,
         parents=parents,
         children=children,
         offsets=offsets,
-        root_positions=joint_positions_xyz[:, 0, :],
+        root_positions=joint_positions_xyz[:, root_index, :],
         local_rotations_zyx=local_rotations_zyx,
         traversal_order=traversal_order,
+        root_index=root_index,
         frame_time_sec=1.0 / float(fps),
     )
 
@@ -65,25 +68,86 @@ def export_pose_sequence3d_to_bvh(
         "bvh_frame_time_sec": float(1.0 / float(fps)),
         "ground_to_floor": bool(ground_to_floor),
         "ground_offset_m": float(ground_offset_m),
-        "joint_format": list(IMUGPT_22_JOINT_NAMES),
+        "joint_format": list(joint_names),
         "coordinate_space": str(sequence.coordinate_space),
     }
 
 
-def _validate_bvh_export_sequence(sequence: PoseSequence3D) -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Export a PoseSequence3D NPZ to BVH.")
+    parser.add_argument(
+        "--pose3d-npz",
+        type=Path,
+        required=True,
+        help="Path to the input pose3d.npz file.",
+    )
+    parser.add_argument(
+        "--output-bvh",
+        type=Path,
+        required=True,
+        help="Path to the output BVH file.",
+    )
+    parser.add_argument(
+        "--no-ground-to-floor",
+        action="store_true",
+        help="Disable vertical offset normalization that places the lowest point on the floor.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    with np.load(args.pose3d_npz, allow_pickle=False) as payload:
+        sequence = PoseSequence3D.from_npz_payload(payload)
+
+    artifacts = export_pose_sequence3d_to_bvh(
+        sequence,
+        args.output_bvh,
+        ground_to_floor=bool(not args.no_ground_to_floor),
+    )
+    print(json.dumps(artifacts, indent=2, ensure_ascii=True))
+    return 0
+
+
+def _validate_bvh_export_sequence(sequence: PoseSequence3D) -> tuple[list[str], list[int], int]:
     joint_names = [str(name) for name in sequence.joint_names_3d]
-    if joint_names != list(IMUGPT_22_JOINT_NAMES):
-        raise ValueError("BVH export expects pose_sequence ordered as IMUGPT_22_JOINT_NAMES.")
-    if [int(parent) for parent in sequence.skeleton_parents] != list(IMUGPT_22_PARENT_INDICES):
-        raise ValueError("BVH export expects IMUGPT22 skeleton parent indices.")
+    num_joints = len(joint_names)
+    if num_joints == 0:
+        raise ValueError("BVH export expects at least one joint in joint_names_3d.")
+
+    parents = [int(parent) for parent in sequence.skeleton_parents]
+    if len(parents) != num_joints:
+        raise ValueError(
+            "BVH export expects skeleton_parents and joint_names_3d to have the same length: "
+            f"got {len(parents)} and {num_joints}."
+        )
+
+    invalid_parent_indices = [parent for parent in parents if parent < -1 or parent >= num_joints]
+    if len(invalid_parent_indices) > 0:
+        raise ValueError(
+            "BVH export expects each skeleton parent index to be -1 or in [0, num_joints)."
+        )
+
+    root_indices = [index for index, parent in enumerate(parents) if parent == -1]
+    if len(root_indices) != 1:
+        raise ValueError(
+            f"BVH export expects exactly one skeleton root (parent -1), got {len(root_indices)}."
+        )
+    root_index = int(root_indices[0])
+
+    children = _build_children_list(parents)
+    traversal = _collect_depth_first_order(children, root_index=root_index)
+    if len(traversal) != num_joints:
+        raise ValueError(
+            "BVH export expects a connected tree skeleton rooted at the unique parent=-1 joint."
+        )
 
     joint_positions_xyz = np.asarray(sequence.joint_positions_xyz, dtype=np.float32)
-    if joint_positions_xyz.ndim != 3 or joint_positions_xyz.shape[1:] != (len(IMUGPT_22_JOINT_NAMES), 3):
-        raise ValueError("BVH export expects joint_positions_xyz with shape [T, 22, 3].")
+    if joint_positions_xyz.ndim != 3 or joint_positions_xyz.shape[1:] != (num_joints, 3):
+        raise ValueError(f"BVH export expects joint_positions_xyz with shape [T, {num_joints}, 3].")
     if joint_positions_xyz.shape[0] == 0:
         raise ValueError("BVH export expects at least one frame.")
     if not np.isfinite(joint_positions_xyz).all():
         raise ValueError("BVH export expects finite joint_positions_xyz without NaN.")
+
+    return joint_names, parents, root_index
 
 
 def _build_children_list(parents: Sequence[int]) -> List[List[int]]:
@@ -108,8 +172,10 @@ def _collect_depth_first_order(children: Sequence[Sequence[int]], *, root_index:
 
 def _estimate_rest_offsets(joint_positions_xyz: np.ndarray, parents: Sequence[int]) -> np.ndarray:
     offsets = np.zeros((joint_positions_xyz.shape[1], 3), dtype=np.float32)
-    for joint_index in range(1, joint_positions_xyz.shape[1]):
+    for joint_index in range(joint_positions_xyz.shape[1]):
         parent_index = int(parents[joint_index])
+        if parent_index < 0:
+            continue
         segment_vectors = joint_positions_xyz[:, joint_index, :] - joint_positions_xyz[:, parent_index, :]
         lengths = np.linalg.norm(segment_vectors, axis=1)
         valid_mask = np.isfinite(lengths) & (lengths > _EPSILON)
@@ -135,6 +201,8 @@ def _estimate_local_euler_rotations_zyx(
     parents: Sequence[int],
     children: Sequence[Sequence[int]],
     traversal_order: Sequence[int],
+    *,
+    root_index: int,
 ) -> np.ndarray:
     num_frames = int(joint_positions_xyz.shape[0])
     num_joints = int(joint_positions_xyz.shape[1])
@@ -145,7 +213,7 @@ def _estimate_local_euler_rotations_zyx(
     for frame_index in range(num_frames):
         for joint_index in traversal_order:
             child_indices = [int(child_index) for child_index in children[joint_index]]
-            if joint_index == 0:
+            if joint_index == root_index:
                 parent_global_rotation = np.eye(3, dtype=np.float32)
             else:
                 parent_global_rotation = global_rotations[frame_index, int(parents[joint_index])]
@@ -269,13 +337,14 @@ def _write_bvh_file(
     root_positions: np.ndarray,
     local_rotations_zyx: np.ndarray,
     traversal_order: Sequence[int],
+    root_index: int,
     frame_time_sec: float,
 ) -> None:
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write("HIERARCHY\n")
         _write_joint_hierarchy(
             handle=handle,
-            joint_index=0,
+            joint_index=int(root_index),
             joint_names=joint_names,
             parents=parents,
             children=children,
@@ -288,7 +357,7 @@ def _write_bvh_file(
         for frame_index in range(root_positions.shape[0]):
             frame_values: List[float] = []
             for joint_index in traversal_order:
-                if int(joint_index) == 0:
+                if int(joint_index) == int(root_index):
                     frame_values.extend(float(value) for value in root_positions[frame_index])
                 frame_values.extend(float(value) for value in local_rotations_zyx[frame_index, joint_index])
             handle.write(" ".join(f"{value:.6f}" for value in frame_values) + "\n")
@@ -362,3 +431,7 @@ def _resolve_sequence_fps(sequence: PoseSequence3D) -> float:
         if finite_positive.size > 0:
             return float(1.0 / float(np.median(finite_positive)))
     return float(_DEFAULT_FPS)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
