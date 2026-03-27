@@ -154,6 +154,8 @@ class RobotEmotionsVirtualIMUTests(unittest.TestCase):
                         output_dir=tmp_dir,
                         clip_ids=[record.clip_id],
                         env_name="openmmlab",
+                        estimate_sensor_frame=True,
+                        estimate_sensor_names=["left_forearm", "right_forearm"],
                     )
 
             self.assertEqual(summary["num_ok"], 1)
@@ -168,6 +170,11 @@ class RobotEmotionsVirtualIMUTests(unittest.TestCase):
             self.assertTrue(manifest_entries[0]["ik_quality_report"]["ik_ok"])
             self.assertTrue(manifest_entries[0]["virtual_imu_quality_report"]["virtual_imu_ok"])
             mocked_pipeline.assert_called_once()
+            self.assertTrue(mocked_pipeline.call_args.kwargs["estimate_sensor_frame"])
+            self.assertEqual(
+                mocked_pipeline.call_args.kwargs["estimate_sensor_names"],
+                ("left_forearm", "right_forearm"),
+            )
 
     def test_cli_export_virtual_imu_dispatches_wrapper(self) -> None:
         with patch(
@@ -182,10 +189,19 @@ class RobotEmotionsVirtualIMUTests(unittest.TestCase):
                         "/tmp/robot_emotions_virtual_imu",
                         "--clip-id",
                         "robot_emotions_10ms_u02_tag05",
+                        "--estimate-sensor-frame",
+                        "--estimate-sensor-names",
+                        "left_forearm",
+                        "right_forearm",
                     ]
                 )
 
         self.assertEqual(exit_code, 0)
         mocked_wrapper.assert_called_once()
         self.assertEqual(mocked_wrapper.call_args.kwargs["output_dir"], "/tmp/robot_emotions_virtual_imu")
+        self.assertTrue(mocked_wrapper.call_args.kwargs["estimate_sensor_frame"])
+        self.assertEqual(
+            mocked_wrapper.call_args.kwargs["estimate_sensor_names"],
+            ["left_forearm", "right_forearm"],
+        )
         mocked_print.assert_called_once()

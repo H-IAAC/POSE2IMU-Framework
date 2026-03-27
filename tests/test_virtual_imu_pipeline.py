@@ -1,11 +1,17 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-from pose_module.interfaces import IMUGPT_22_JOINT_NAMES, IMUGPT_22_PARENT_INDICES, PoseSequence3D
+from pose_module.interfaces import (
+    IMUGPT_22_JOINT_NAMES,
+    IMUGPT_22_PARENT_INDICES,
+    PoseSequence3D,
+    VirtualIMUSequence,
+)
 from pose_module.pipeline import run_virtual_imu_pipeline
 
 
@@ -120,4 +126,96 @@ class VirtualIMUPipelineTests(unittest.TestCase):
                     calibrated_result["virtual_imu_sequence"].acc,
                     calibrated_result["imusim_result"]["raw_virtual_imu_sequence"].acc,
                 )
+            )
+
+    def test_run_virtual_imu_pipeline_merges_sensor_frame_estimation_outputs(self) -> None:
+        pose_sequence = _make_pose3d_sequence()
+        pose3d_result = {
+            "clip_id": "clip_virtual_pipeline",
+            "pose_sequence": pose_sequence,
+            "quality_report": {"clip_id": "clip_virtual_pipeline", "status": "ok", "notes": []},
+            "artifacts": {
+                "pose3d_npz_path": "/tmp/fake_pose3d.npz",
+                "quality_report_json_path": "/tmp/fake_pose3d_quality.json",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "clip" / "pose"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            aligned_path = output_dir / "virtual_imu_frame_aligned.npz"
+            report_path = output_dir / "sensor_frame_estimation_report.json"
+            quality_path = output_dir / "frame_alignment_quality_report.json"
+
+            aligned_sequence = VirtualIMUSequence(
+                clip_id="clip_virtual_pipeline",
+                fps=20.0,
+                sensor_names=["waist", "head", "right_forearm", "left_forearm"],
+                acc=np.zeros((8, 4, 3), dtype=np.float32),
+                gyro=np.zeros((8, 4, 3), dtype=np.float32),
+                timestamps_sec=np.arange(8, dtype=np.float32) / np.float32(20.0),
+                source="unit_test_virtual_imu_frame_aligned",
+            )
+            np.savez_compressed(aligned_path, **aligned_sequence.to_npz_payload())
+            report_path.write_text(
+                json.dumps({"clip_id": "clip_virtual_pipeline", "status": "ok"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            quality_path.write_text(
+                json.dumps({"clip_id": "clip_virtual_pipeline", "status": "ok"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            fake_frame_alignment_result = {
+                "status": "ok",
+                "aligned_virtual_imu_sequence": aligned_sequence,
+                "frame_estimation_report": {"clip_id": "clip_virtual_pipeline", "status": "ok"},
+                "lag_report": {"clip_id": "clip_virtual_pipeline", "status": "ok"},
+                "quality_report": {
+                    "enabled": True,
+                    "clip_id": "clip_virtual_pipeline",
+                    "status": "ok",
+                    "target_sensor_names": ["left_forearm", "right_forearm"],
+                    "estimated_sensor_names": ["left_forearm", "right_forearm"],
+                    "real_imu_npz_path": str((output_dir.parent / "imu.npz").resolve()),
+                    "mean_gyro_corr_before": 0.12,
+                    "mean_gyro_corr_after": 0.88,
+                    "mean_acc_corr_before": 0.25,
+                    "mean_acc_corr_after": 0.79,
+                    "notes": [],
+                },
+                "artifacts": {
+                    "virtual_imu_frame_aligned_npz_path": str(aligned_path.resolve()),
+                    "sensor_frame_estimation_report_json_path": str(report_path.resolve()),
+                    "frame_alignment_quality_report_json_path": str(quality_path.resolve()),
+                },
+            }
+
+            with patch("pose_module.pipeline.run_pose3d_pipeline", return_value=pose3d_result):
+                with patch(
+                    "pose_module.pipeline._run_optional_sensor_frame_estimation",
+                    return_value=fake_frame_alignment_result,
+                ) as mocked_alignment:
+                    result = run_virtual_imu_pipeline(
+                        clip_id="clip_virtual_pipeline",
+                        video_path=str(Path(tmp_dir) / "video.mp4"),
+                        output_dir=output_dir,
+                        save_debug=False,
+                        estimate_sensor_frame=True,
+                        estimate_sensor_names=["left_forearm", "right_forearm"],
+                    )
+
+            mocked_alignment.assert_called_once()
+            self.assertTrue(result["quality_report"]["sensor_frame_estimation_enabled"])
+            self.assertEqual(result["quality_report"]["sensor_frame_estimation_status"], "ok")
+            self.assertEqual(
+                result["quality_report"]["sensor_frame_estimation_target_sensors"],
+                ["left_forearm", "right_forearm"],
+            )
+            self.assertAlmostEqual(result["quality_report"]["sensor_frame_estimation_mean_gyro_corr_after"], 0.88)
+            self.assertAlmostEqual(result["quality_report"]["sensor_frame_estimation_mean_acc_corr_after"], 0.79)
+            self.assertEqual(result["frame_alignment_quality_report"]["status"], "ok")
+            self.assertIsNotNone(result["aligned_virtual_imu_sequence"])
+            self.assertEqual(
+                result["artifacts"]["virtual_imu_frame_aligned_npz_path"],
+                str(aligned_path.resolve()),
             )

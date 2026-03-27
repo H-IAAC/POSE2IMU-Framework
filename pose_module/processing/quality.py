@@ -329,27 +329,32 @@ def merge_stage510_quality_reports(
     pose3d_quality: Mapping[str, Any],
     ik_quality: Mapping[str, Any],
     virtual_imu_quality: Mapping[str, Any],
+    frame_alignment_quality: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     pose3d_quality = dict(pose3d_quality)
     ik_quality = dict(ik_quality)
     virtual_imu_quality = dict(virtual_imu_quality)
+    frame_alignment_quality = {} if frame_alignment_quality is None else dict(frame_alignment_quality)
 
     notes = []
     notes.extend([str(value) for value in pose3d_quality.get("notes", [])])
     notes.extend([str(value) for value in ik_quality.get("notes", [])])
     notes.extend([str(value) for value in virtual_imu_quality.get("notes", [])])
+    notes.extend([str(value) for value in frame_alignment_quality.get("notes", [])])
 
     status = "ok"
     if (
         pose3d_quality.get("status") == "fail"
         or ik_quality.get("status") == "fail"
         or virtual_imu_quality.get("status") == "fail"
+        or frame_alignment_quality.get("status") == "fail"
     ):
         status = "fail"
     elif (
         pose3d_quality.get("status") == "warning"
         or ik_quality.get("status") == "warning"
         or virtual_imu_quality.get("status") == "warning"
+        or frame_alignment_quality.get("status") == "warning"
         or len(notes) > 0
     ):
         status = "warning"
@@ -385,6 +390,23 @@ def merge_stage510_quality_reports(
             ),
             "virtual_imu_real_calibration_max_abs_delta": virtual_imu_quality.get(
                 "real_imu_calibration_max_abs_delta"
+            ),
+            "sensor_frame_estimation_enabled": frame_alignment_quality.get("enabled"),
+            "sensor_frame_estimation_status": frame_alignment_quality.get("status"),
+            "sensor_frame_estimation_target_sensors": frame_alignment_quality.get("target_sensor_names"),
+            "sensor_frame_estimation_estimated_sensors": frame_alignment_quality.get("estimated_sensor_names"),
+            "sensor_frame_estimation_real_imu_npz_path": frame_alignment_quality.get("real_imu_npz_path"),
+            "sensor_frame_estimation_mean_gyro_corr_before": frame_alignment_quality.get(
+                "mean_gyro_corr_before"
+            ),
+            "sensor_frame_estimation_mean_gyro_corr_after": frame_alignment_quality.get(
+                "mean_gyro_corr_after"
+            ),
+            "sensor_frame_estimation_mean_acc_corr_before": frame_alignment_quality.get(
+                "mean_acc_corr_before"
+            ),
+            "sensor_frame_estimation_mean_acc_corr_after": frame_alignment_quality.get(
+                "mean_acc_corr_after"
             ),
             "virtual_imu_max_acceleration_norm_m_s2": virtual_imu_quality.get("max_acceleration_norm_m_s2"),
             "virtual_imu_max_gyro_norm_rad_s": virtual_imu_quality.get("max_gyro_norm_rad_s"),

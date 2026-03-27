@@ -113,6 +113,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             real_imu_signal_mode=str(args.real_imu_signal_mode),
             real_imu_percentile_resolution=int(args.real_imu_percentile_resolution),
             real_imu_per_class_calibration=bool(not args.no_real_imu_per_class_calibration),
+            estimate_sensor_frame=bool(args.estimate_sensor_frame),
+            estimate_sensor_names=(
+                None if args.estimate_sensor_names is None else list(args.estimate_sensor_names)
+            ),
             domains=tuple(args.domains),
         )
         print(json.dumps(summary, indent=2, ensure_ascii=True))
@@ -202,6 +206,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--no-real-imu-per-class-calibration",
         action="store_true",
         help="Disable per-class calibration and always use the full real IMU reference distribution.",
+    )
+    export_virtual_imu_parser.add_argument(
+        "--estimate-sensor-frame",
+        action="store_true",
+        help="Estimate a diagnostic per-clip frame alignment for the selected IMU sensors.",
+    )
+    export_virtual_imu_parser.add_argument(
+        "--estimate-sensor-names",
+        nargs="+",
+        default=None,
+        help="Optional list of sensor names targeted by the frame-alignment estimator.",
     )
     return parser
 

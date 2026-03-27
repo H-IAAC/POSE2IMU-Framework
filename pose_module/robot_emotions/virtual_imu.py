@@ -41,6 +41,8 @@ def run_robot_emotions_virtual_imu(
     real_imu_signal_mode: str = "acc",
     real_imu_percentile_resolution: int = 100,
     real_imu_per_class_calibration: bool = True,
+    estimate_sensor_frame: bool = False,
+    estimate_sensor_names: Optional[Sequence[str]] = None,
     domains: Sequence[str] = ("10ms", "30ms"),
 ) -> Dict[str, Any]:
     extractor = RobotEmotionsExtractor(dataset_root, domains=tuple(str(domain) for domain in domains))
@@ -90,6 +92,10 @@ def run_robot_emotions_virtual_imu(
                 real_imu_signal_mode=str(real_imu_signal_mode),
                 real_imu_percentile_resolution=int(real_imu_percentile_resolution),
                 real_imu_per_class_calibration=bool(real_imu_per_class_calibration),
+                estimate_sensor_frame=bool(estimate_sensor_frame),
+                estimate_sensor_names=(
+                    None if estimate_sensor_names is None else tuple(str(name) for name in estimate_sensor_names)
+                ),
             )
             entry = _build_virtual_imu_manifest_entry(
                 record=record,

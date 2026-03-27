@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -15,7 +15,7 @@ from pose_module.export.debug_video import (
     render_pose3d_side_by_side_video,
     resolve_debug_overlay_variant_path,
 )
-from pose_module.interfaces import Pose2DJob, PoseSequence2D
+from pose_module.interfaces import Pose2DJob, PoseSequence2D, VirtualIMUSequence
 from pose_module.io.cache import write_json_file
 from pose_module.motionbert.adapter import write_pose_sequence3d_npz
 from pose_module.motionbert.lifter import MotionBERTPredictor, run_motionbert_lifter
@@ -29,6 +29,10 @@ from pose_module.processing.quality import (
     merge_stage510_quality_reports,
 )
 from pose_module.processing.root_estimator import run_root_trajectory_estimator
+from pose_module.processing.sensor_frame_estimation import (
+    DEFAULT_TARGET_SENSOR_NAMES,
+    estimate_sensor_frame_alignment,
+)
 from pose_module.processing.skeleton_mapper import map_pose_sequence_to_imugpt22
 from pose_module.tracking.person_selector import build_person_track_report, link_person_tracks
 from pose_module.vitpose.adapter import (
@@ -414,6 +418,8 @@ def run_virtual_imu_pipeline(
     real_imu_signal_mode: str = "acc",
     real_imu_percentile_resolution: int = 100,
     real_imu_per_class_calibration: bool = True,
+    estimate_sensor_frame: bool = False,
+    estimate_sensor_names: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -458,16 +464,31 @@ def run_virtual_imu_pipeline(
         real_imu_percentile_resolution=int(real_imu_percentile_resolution),
         real_imu_per_class_calibration=bool(real_imu_per_class_calibration),
     )
+    frame_alignment_result = _build_disabled_sensor_frame_estimation_result(
+        raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+        target_sensor_names=DEFAULT_TARGET_SENSOR_NAMES if estimate_sensor_names is None else estimate_sensor_names,
+    )
+    if bool(estimate_sensor_frame):
+        frame_alignment_result = _run_optional_sensor_frame_estimation(
+            raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+            target_sensor_names=DEFAULT_TARGET_SENSOR_NAMES
+            if estimate_sensor_names is None
+            else estimate_sensor_names,
+            real_imu_npz_path=_resolve_real_imu_npz_path(output_dir=output_dir),
+            output_dir=output_dir,
+        )
     merged_quality = merge_stage510_quality_reports(
         pose3d_quality=pose3d_result["quality_report"],
         ik_quality=ik_result["quality_report"],
         virtual_imu_quality=imusim_result["quality_report"],
+        frame_alignment_quality=frame_alignment_result["quality_report"],
     )
     write_json_file(merged_quality, output_dir / "quality_report.json")
 
     artifacts = dict(pose3d_result["artifacts"])
     artifacts.update(ik_result["artifacts"])
     artifacts.update(imusim_result["artifacts"])
+    artifacts.update(frame_alignment_result["artifacts"])
     artifacts["quality_report_json_path"] = str((output_dir / "quality_report.json").resolve())
 
     return {
@@ -481,8 +502,13 @@ def run_virtual_imu_pipeline(
         "ik_quality_report": ik_result["quality_report"],
         "virtual_imu_quality_report": imusim_result["quality_report"],
         "virtual_imu_calibration_report": imusim_result["calibration_report"],
+        "aligned_virtual_imu_sequence": frame_alignment_result["aligned_virtual_imu_sequence"],
+        "sensor_frame_estimation_report": frame_alignment_result["frame_estimation_report"],
+        "sensor_frame_estimation_lag_report": frame_alignment_result["lag_report"],
+        "frame_alignment_quality_report": frame_alignment_result["quality_report"],
         "ik_result": ik_result,
         "imusim_result": imusim_result,
+        "frame_alignment_result": frame_alignment_result,
         "artifacts": artifacts,
     }
 
@@ -581,6 +607,140 @@ def _build_motionbert_backend_input_sequence(pose2d_result: Mapping[str, Any]) -
         observed_mask=np.asarray(pose_sequence.resolved_observed_mask(), dtype=bool),
         imputed_mask=np.asarray(pose_sequence.resolved_imputed_mask(), dtype=bool),
     )
+
+
+def _resolve_real_imu_npz_path(*, output_dir: Path) -> str | None:
+    for candidate in (output_dir.parent / "imu.npz", output_dir / "imu.npz"):
+        if candidate.exists():
+            return str(candidate.resolve())
+    return None
+
+
+def _run_optional_sensor_frame_estimation(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    target_sensor_names: Sequence[str],
+    real_imu_npz_path: str | None,
+    output_dir: Path,
+) -> Dict[str, Any]:
+    try:
+        return estimate_sensor_frame_alignment(
+            raw_virtual_imu_sequence,
+            real_imu_npz_path=real_imu_npz_path,
+            target_sensor_names=target_sensor_names,
+            output_dir=output_dir,
+        )
+    except Exception as exc:
+        return _build_failed_sensor_frame_estimation_result(
+            raw_virtual_imu_sequence=raw_virtual_imu_sequence,
+            target_sensor_names=target_sensor_names,
+            output_dir=output_dir,
+            error=str(exc),
+            real_imu_npz_path=real_imu_npz_path,
+        )
+
+
+def _build_disabled_sensor_frame_estimation_result(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    target_sensor_names: Sequence[str],
+) -> Dict[str, Any]:
+    del raw_virtual_imu_sequence
+    return {
+        "status": "not_requested",
+        "aligned_virtual_imu_sequence": None,
+        "frame_estimation_report": None,
+        "lag_report": None,
+        "quality_report": {
+            "enabled": False,
+            "status": None,
+            "target_sensor_names": [str(name) for name in target_sensor_names],
+            "estimated_sensor_names": [],
+            "real_imu_npz_path": None,
+            "mean_gyro_corr_before": None,
+            "mean_gyro_corr_after": None,
+            "mean_acc_corr_before": None,
+            "mean_acc_corr_after": None,
+            "notes": [],
+        },
+        "artifacts": {
+            "virtual_imu_frame_aligned_npz_path": None,
+            "sensor_frame_estimation_report_json_path": None,
+            "frame_alignment_quality_report_json_path": None,
+        },
+    }
+
+
+def _build_failed_sensor_frame_estimation_result(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    target_sensor_names: Sequence[str],
+    output_dir: Path,
+    error: str,
+    real_imu_npz_path: str | None,
+) -> Dict[str, Any]:
+    aligned_virtual_imu_sequence = VirtualIMUSequence(
+        clip_id=str(raw_virtual_imu_sequence.clip_id),
+        fps=None if raw_virtual_imu_sequence.fps is None else float(raw_virtual_imu_sequence.fps),
+        sensor_names=list(raw_virtual_imu_sequence.sensor_names),
+        acc=np.asarray(raw_virtual_imu_sequence.acc, dtype=np.float32),
+        gyro=np.asarray(raw_virtual_imu_sequence.gyro, dtype=np.float32),
+        timestamps_sec=np.asarray(raw_virtual_imu_sequence.timestamps_sec, dtype=np.float32),
+        source=f"{raw_virtual_imu_sequence.source}_frame_aligned",
+    )
+    notes = [f"sensor_frame_estimation_failed:{error}"]
+    frame_estimation_report = {
+        "clip_id": str(raw_virtual_imu_sequence.clip_id),
+        "status": "warning",
+        "real_imu_npz_path": real_imu_npz_path,
+        "target_sensor_names": [str(name) for name in target_sensor_names],
+        "sensor_reports": {},
+        "notes": list(notes),
+    }
+    lag_report = {
+        "clip_id": str(raw_virtual_imu_sequence.clip_id),
+        "status": "warning",
+        "real_imu_npz_path": real_imu_npz_path,
+        "target_sensor_names": [str(name) for name in target_sensor_names],
+        "sensor_lags": {},
+        "notes": list(notes),
+    }
+    quality_report = {
+        "enabled": True,
+        "clip_id": str(raw_virtual_imu_sequence.clip_id),
+        "status": "warning",
+        "real_imu_npz_path": real_imu_npz_path,
+        "target_sensor_names": [str(name) for name in target_sensor_names],
+        "estimated_sensor_names": [],
+        "mean_gyro_corr_before": None,
+        "mean_gyro_corr_after": None,
+        "mean_acc_corr_before": None,
+        "mean_acc_corr_after": None,
+        "notes": list(notes),
+    }
+    artifacts = {
+        "virtual_imu_frame_aligned_npz_path": None,
+        "sensor_frame_estimation_report_json_path": None,
+        "frame_alignment_quality_report_json_path": None,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    aligned_path = output_dir / "virtual_imu_frame_aligned.npz"
+    np.savez_compressed(aligned_path, **aligned_virtual_imu_sequence.to_npz_payload())
+    artifacts["virtual_imu_frame_aligned_npz_path"] = str(aligned_path.resolve())
+    frame_report_path = output_dir / "sensor_frame_estimation_report.json"
+    write_json_file(frame_estimation_report, frame_report_path)
+    artifacts["sensor_frame_estimation_report_json_path"] = str(frame_report_path.resolve())
+    quality_report_path = output_dir / "frame_alignment_quality_report.json"
+    write_json_file(quality_report, quality_report_path)
+    artifacts["frame_alignment_quality_report_json_path"] = str(quality_report_path.resolve())
+    return {
+        "status": "warning",
+        "aligned_virtual_imu_sequence": aligned_virtual_imu_sequence,
+        "frame_estimation_report": frame_estimation_report,
+        "lag_report": lag_report,
+        "quality_report": quality_report,
+        "artifacts": artifacts,
+    }
 
 
 def _render_debug_overlay_variant(
