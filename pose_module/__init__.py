@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-__all__ = ["run_pose2d_pipeline", "run_pose3d_pipeline", "download_required_models"]
+__all__ = [
+    "run_pose2d_pipeline",
+    "run_pose3d_pipeline",
+    "run_virtual_imu_pipeline",
+    "generate_pose_from_video",
+    "generate_virtual_imu_from_video",
+    "download_required_models",
+]
 
 
 def __getattr__(name: str):
@@ -14,6 +21,18 @@ def __getattr__(name: str):
         from .pipeline import run_pose3d_pipeline
 
         return run_pose3d_pipeline
+    if name == "run_virtual_imu_pipeline":
+        from .pipeline import run_virtual_imu_pipeline
+
+        return run_virtual_imu_pipeline
+    if name == "generate_pose_from_video":
+        from .pipeline import generate_pose_from_video
+
+        return generate_pose_from_video
+    if name == "generate_virtual_imu_from_video":
+        from .pipeline import generate_virtual_imu_from_video
+
+        return generate_virtual_imu_from_video
     if name == "download_required_models":
         from .download_models import download_required_models
 

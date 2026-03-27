@@ -3,11 +3,13 @@ import unittest
 import numpy as np
 
 from pose_module.interfaces import (
+    IKSequence,
     IMUGPT_22_JOINT_NAMES,
     IMUGPT_22_PARENT_INDICES,
     MOTIONBERT_17_JOINT_NAMES,
     PoseSequence2D,
     PoseSequence3D,
+    VirtualIMUSequence,
 )
 
 
@@ -59,6 +61,63 @@ class PoseInterfaceTests(unittest.TestCase):
         self.assertIsNone(sequence.imputed_mask)
         self.assertFalse(bool(sequence.resolved_observed_mask()[0, IMUGPT_22_JOINT_NAMES.index("Left_ankle")]))
         self.assertFalse(bool(sequence.resolved_imputed_mask()[0, IMUGPT_22_JOINT_NAMES.index("Left_ankle")]))
+
+    def test_pose_sequence3d_npz_roundtrip_preserves_root_translation(self) -> None:
+        root_translation_m = np.asarray([[0.1, 0.2, 0.3]], dtype=np.float32)
+        sequence = PoseSequence3D(
+            clip_id="clip_interfaces_3d_root",
+            fps=20.0,
+            fps_original=30.0,
+            joint_names_3d=list(IMUGPT_22_JOINT_NAMES),
+            joint_positions_xyz=np.zeros((1, len(IMUGPT_22_JOINT_NAMES), 3), dtype=np.float32),
+            joint_confidence=np.ones((1, len(IMUGPT_22_JOINT_NAMES)), dtype=np.float32),
+            skeleton_parents=list(IMUGPT_22_PARENT_INDICES),
+            frame_indices=np.asarray([0], dtype=np.int32),
+            timestamps_sec=np.asarray([0.0], dtype=np.float32),
+            source="unit_test",
+            coordinate_space="pseudo_global_metric",
+            root_translation_m=root_translation_m,
+        )
+
+        roundtrip = PoseSequence3D.from_npz_payload(sequence.to_npz_payload())
+
+        np.testing.assert_allclose(roundtrip.root_translation_m, root_translation_m, atol=1e-6)
+
+    def test_ik_sequence_npz_roundtrip_preserves_rotations_and_offsets(self) -> None:
+        sequence = IKSequence(
+            clip_id="clip_ik",
+            fps=20.0,
+            fps_original=30.0,
+            joint_names_3d=list(IMUGPT_22_JOINT_NAMES),
+            local_joint_rotations=np.zeros((2, len(IMUGPT_22_JOINT_NAMES), 4), dtype=np.float32),
+            root_translation_m=np.zeros((2, 3), dtype=np.float32),
+            joint_offsets_m=np.zeros((len(IMUGPT_22_JOINT_NAMES), 3), dtype=np.float32),
+            skeleton_parents=list(IMUGPT_22_PARENT_INDICES),
+            frame_indices=np.asarray([0, 1], dtype=np.int32),
+            timestamps_sec=np.asarray([0.0, 0.05], dtype=np.float32),
+            source="unit_test",
+        )
+
+        roundtrip = IKSequence.from_npz_payload(sequence.to_npz_payload())
+
+        np.testing.assert_allclose(roundtrip.local_joint_rotations, sequence.local_joint_rotations, atol=1e-6)
+        np.testing.assert_allclose(roundtrip.joint_offsets_m, sequence.joint_offsets_m, atol=1e-6)
+
+    def test_virtual_imu_sequence_npz_roundtrip_preserves_acc_and_gyro(self) -> None:
+        sequence = VirtualIMUSequence(
+            clip_id="clip_virtual_imu",
+            fps=20.0,
+            sensor_names=["waist", "head"],
+            acc=np.ones((3, 2, 3), dtype=np.float32),
+            gyro=np.zeros((3, 2, 3), dtype=np.float32),
+            timestamps_sec=np.asarray([0.0, 0.05, 0.10], dtype=np.float32),
+            source="unit_test",
+        )
+
+        roundtrip = VirtualIMUSequence.from_npz_payload(sequence.to_npz_payload())
+
+        np.testing.assert_allclose(roundtrip.acc, sequence.acc, atol=1e-6)
+        np.testing.assert_allclose(roundtrip.gyro, sequence.gyro, atol=1e-6)
 
 
 if __name__ == "__main__":

@@ -383,6 +383,7 @@ class PoseSequence3D:
     timestamps_sec: np.ndarray
     source: str
     coordinate_space: str = "camera"
+    root_translation_m: Optional[np.ndarray] = None
     observed_mask: Optional[np.ndarray] = None
     imputed_mask: Optional[np.ndarray] = None
 
@@ -419,8 +420,20 @@ class PoseSequence3D:
             )
         return imputed_mask
 
+    def resolved_root_translation_m(self) -> Optional[np.ndarray]:
+        if self.root_translation_m is None:
+            return None
+        root_translation = np.asarray(self.root_translation_m, dtype=np.float32)
+        expected_shape = (self.num_frames, 3)
+        if root_translation.shape != expected_shape:
+            raise ValueError(
+                "PoseSequence3D root_translation_m must match shape [T, 3]: "
+                f"got {root_translation.shape} vs {expected_shape}."
+            )
+        return root_translation
+
     def to_npz_payload(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "clip_id": np.asarray(self.clip_id),
             "joint_names_3d": np.asarray(list(self.joint_names_3d)),
             "joint_positions_xyz": np.asarray(self.joint_positions_xyz, dtype=np.float32),
@@ -440,6 +453,10 @@ class PoseSequence3D:
             "source": np.asarray(self.source),
             "coordinate_space": np.asarray(self.coordinate_space),
         }
+        root_translation = self.resolved_root_translation_m()
+        if root_translation is not None:
+            payload["root_translation_m"] = root_translation.astype(np.float32, copy=False)
+        return payload
 
     @classmethod
     def from_npz_payload(cls, payload: Mapping[str, Any]) -> "PoseSequence3D":
@@ -457,6 +474,11 @@ class PoseSequence3D:
             timestamps_sec=np.asarray(payload["timestamps_sec"], dtype=np.float32),
             source=str(np.asarray(payload["source"]).item()),
             coordinate_space=str(np.asarray(payload["coordinate_space"]).item()),
+            root_translation_m=(
+                np.asarray(payload["root_translation_m"], dtype=np.float32)
+                if "root_translation_m" in payload
+                else None
+            ),
             observed_mask=(
                 np.asarray(payload["observed_mask"], dtype=bool)
                 if "observed_mask" in payload
@@ -467,6 +489,115 @@ class PoseSequence3D:
                 if "imputed_mask" in payload
                 else None
             ),
+        )
+
+
+@dataclass(frozen=True)
+class IKSequence:
+    clip_id: str
+    fps: Optional[float]
+    fps_original: Optional[float]
+    joint_names_3d: Sequence[str]
+    local_joint_rotations: np.ndarray
+    root_translation_m: np.ndarray
+    joint_offsets_m: np.ndarray
+    skeleton_parents: Sequence[int]
+    frame_indices: np.ndarray
+    timestamps_sec: np.ndarray
+    source: str
+    rotation_representation: str = "quaternion_wxyz"
+
+    @property
+    def num_frames(self) -> int:
+        return int(self.local_joint_rotations.shape[0])
+
+    @property
+    def num_joints(self) -> int:
+        return int(self.local_joint_rotations.shape[1])
+
+    def to_npz_payload(self) -> Dict[str, Any]:
+        return {
+            "clip_id": np.asarray(self.clip_id),
+            "joint_names_3d": np.asarray(list(self.joint_names_3d)),
+            "local_joint_rotations": np.asarray(self.local_joint_rotations, dtype=np.float32),
+            "root_translation_m": np.asarray(self.root_translation_m, dtype=np.float32),
+            "joint_offsets_m": np.asarray(self.joint_offsets_m, dtype=np.float32),
+            "skeleton_parents": np.asarray(list(self.skeleton_parents), dtype=np.int32),
+            "frame_indices": np.asarray(self.frame_indices, dtype=np.int32),
+            "timestamps_sec": np.asarray(self.timestamps_sec, dtype=np.float32),
+            "fps": np.asarray(-1.0 if self.fps is None else float(self.fps), dtype=np.float32),
+            "fps_original": np.asarray(
+                -1.0 if self.fps_original is None else float(self.fps_original),
+                dtype=np.float32,
+            ),
+            "num_frames": np.asarray(self.num_frames, dtype=np.int32),
+            "num_joints": np.asarray(self.num_joints, dtype=np.int32),
+            "source": np.asarray(self.source),
+            "rotation_representation": np.asarray(self.rotation_representation),
+        }
+
+    @classmethod
+    def from_npz_payload(cls, payload: Mapping[str, Any]) -> "IKSequence":
+        fps = float(np.asarray(payload["fps"]).item())
+        fps_original = float(np.asarray(payload["fps_original"]).item())
+        return cls(
+            clip_id=str(np.asarray(payload["clip_id"]).item()),
+            fps=None if fps < 0.0 else fps,
+            fps_original=None if fps_original < 0.0 else fps_original,
+            joint_names_3d=[str(value) for value in np.asarray(payload["joint_names_3d"]).tolist()],
+            local_joint_rotations=np.asarray(payload["local_joint_rotations"], dtype=np.float32),
+            root_translation_m=np.asarray(payload["root_translation_m"], dtype=np.float32),
+            joint_offsets_m=np.asarray(payload["joint_offsets_m"], dtype=np.float32),
+            skeleton_parents=[int(value) for value in np.asarray(payload["skeleton_parents"]).tolist()],
+            frame_indices=np.asarray(payload["frame_indices"], dtype=np.int32),
+            timestamps_sec=np.asarray(payload["timestamps_sec"], dtype=np.float32),
+            source=str(np.asarray(payload["source"]).item()),
+            rotation_representation=str(np.asarray(payload["rotation_representation"]).item()),
+        )
+
+
+@dataclass(frozen=True)
+class VirtualIMUSequence:
+    clip_id: str
+    fps: Optional[float]
+    sensor_names: Sequence[str]
+    acc: np.ndarray
+    gyro: np.ndarray
+    timestamps_sec: np.ndarray
+    source: str
+
+    @property
+    def num_frames(self) -> int:
+        return int(self.acc.shape[0])
+
+    @property
+    def num_sensors(self) -> int:
+        return int(self.acc.shape[1])
+
+    def to_npz_payload(self) -> Dict[str, Any]:
+        return {
+            "clip_id": np.asarray(self.clip_id),
+            "sensor_names": np.asarray(list(self.sensor_names)),
+            "acc": np.asarray(self.acc, dtype=np.float32),
+            "gyro": np.asarray(self.gyro, dtype=np.float32),
+            "timestamps_sec": np.asarray(self.timestamps_sec, dtype=np.float32),
+            "fps": np.asarray(-1.0 if self.fps is None else float(self.fps), dtype=np.float32),
+            "num_frames": np.asarray(self.num_frames, dtype=np.int32),
+            "num_sensors": np.asarray(self.num_sensors, dtype=np.int32),
+            "source": np.asarray(self.source),
+        }
+
+    @classmethod
+    def from_npz_payload(cls, payload: Mapping[str, Any]) -> "VirtualIMUSequence":
+        fps = float(np.asarray(payload["fps"]).item())
+        return cls(
+            clip_id=str(np.asarray(payload["clip_id"]).item()),
+            fps=None if fps < 0.0 else fps,
+            sensor_names=[str(value) for value in np.asarray(payload["sensor_names"]).tolist()],
+            acc=np.asarray(payload["acc"], dtype=np.float32),
+            gyro=np.asarray(payload["gyro"], dtype=np.float32),
+            timestamps_sec=np.asarray(payload["timestamps_sec"], dtype=np.float32),
+            source=str(np.asarray(payload["source"]).item()),
         )
 
 

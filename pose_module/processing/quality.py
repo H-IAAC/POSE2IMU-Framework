@@ -263,3 +263,113 @@ def merge_stage57_quality_reports(
         }
     )
     return merged
+
+
+def merge_stage58_quality_reports(
+    *,
+    pose2d_quality: Mapping[str, Any],
+    lifter_quality: Mapping[str, Any],
+    lower_limb_quality: Mapping[str, Any] | None = None,
+    mapper_quality: Mapping[str, Any],
+    normalizer_quality: Mapping[str, Any],
+    root_quality: Mapping[str, Any],
+) -> Dict[str, Any]:
+    root_quality = dict(root_quality)
+    merged = merge_stage57_quality_reports(
+        pose2d_quality=pose2d_quality,
+        lifter_quality=lifter_quality,
+        lower_limb_quality=lower_limb_quality,
+        mapper_quality=mapper_quality,
+        normalizer_quality=normalizer_quality,
+    )
+
+    notes = []
+    notes.extend([str(value) for value in merged.get("notes", [])])
+    notes.extend([str(value) for value in root_quality.get("notes", [])])
+
+    status = str(merged.get("status", "ok"))
+    if root_quality.get("status") == "fail":
+        status = "fail"
+    elif root_quality.get("status") == "warning" and status != "fail":
+        status = "warning"
+
+    merged.update(
+        {
+            "status": str(status),
+            "pose3d_num_frames": root_quality.get("num_frames", merged.get("pose3d_num_frames")),
+            "pose3d_num_joints": root_quality.get("num_joints", merged.get("pose3d_num_joints")),
+            "pose3d_coordinate_space": root_quality.get(
+                "coordinate_space",
+                merged.get("pose3d_coordinate_space"),
+            ),
+            "pose3d_joint_format": root_quality.get(
+                "output_joint_format",
+                merged.get("pose3d_joint_format"),
+            ),
+            "root_translation_ok": root_quality.get("root_translation_ok"),
+            "root_estimator_coordinate_space": root_quality.get("coordinate_space"),
+            "root_estimator_planarize_vertical": root_quality.get("planarize_vertical"),
+            "root_estimator_scale_factor": root_quality.get("scale_factor"),
+            "root_drift_score": root_quality.get("root_drift_score"),
+            "root_path_length_m": root_quality.get("root_path_length_m"),
+            "root_horizontal_path_length_m": root_quality.get("root_horizontal_path_length_m"),
+            "root_vertical_span_m": root_quality.get("root_vertical_span_m"),
+            "root_max_step_m": root_quality.get("root_max_step_m"),
+            "root_mean_step_m": root_quality.get("root_mean_step_m"),
+            "root_smoothing_window_length": root_quality.get("smoothing_window_length"),
+            "root_smoothing_polyorder": root_quality.get("smoothing_polyorder"),
+            "notes": list(dict.fromkeys(notes)),
+        }
+    )
+    return merged
+
+
+def merge_stage510_quality_reports(
+    *,
+    pose3d_quality: Mapping[str, Any],
+    ik_quality: Mapping[str, Any],
+    virtual_imu_quality: Mapping[str, Any],
+) -> Dict[str, Any]:
+    pose3d_quality = dict(pose3d_quality)
+    ik_quality = dict(ik_quality)
+    virtual_imu_quality = dict(virtual_imu_quality)
+
+    notes = []
+    notes.extend([str(value) for value in pose3d_quality.get("notes", [])])
+    notes.extend([str(value) for value in ik_quality.get("notes", [])])
+    notes.extend([str(value) for value in virtual_imu_quality.get("notes", [])])
+
+    status = "ok"
+    if (
+        pose3d_quality.get("status") == "fail"
+        or ik_quality.get("status") == "fail"
+        or virtual_imu_quality.get("status") == "fail"
+    ):
+        status = "fail"
+    elif (
+        pose3d_quality.get("status") == "warning"
+        or ik_quality.get("status") == "warning"
+        or virtual_imu_quality.get("status") == "warning"
+        or len(notes) > 0
+    ):
+        status = "warning"
+
+    merged = dict(pose3d_quality)
+    merged.update(
+        {
+            "status": str(status),
+            "ik_ok": ik_quality.get("ik_ok"),
+            "ik_rotation_representation": ik_quality.get("rotation_representation"),
+            "ik_reconstruction_error_mean_m": ik_quality.get("reconstruction_error_mean_m"),
+            "ik_reconstruction_error_max_m": ik_quality.get("reconstruction_error_max_m"),
+            "virtual_imu_ok": virtual_imu_quality.get("virtual_imu_ok"),
+            "virtual_imu_num_sensors": virtual_imu_quality.get("num_sensors"),
+            "virtual_imu_sensor_names": virtual_imu_quality.get("sensor_names"),
+            "virtual_imu_acc_noise_std_m_s2": virtual_imu_quality.get("acc_noise_std_m_s2"),
+            "virtual_imu_gyro_noise_std_rad_s": virtual_imu_quality.get("gyro_noise_std_rad_s"),
+            "virtual_imu_max_acceleration_norm_m_s2": virtual_imu_quality.get("max_acceleration_norm_m_s2"),
+            "virtual_imu_max_gyro_norm_rad_s": virtual_imu_quality.get("max_gyro_norm_rad_s"),
+            "notes": list(dict.fromkeys(notes)),
+        }
+    )
+    return merged

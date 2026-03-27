@@ -34,6 +34,25 @@ cleaning:
   savgol_polyorder: 2
   low_conf_threshold: 0.2
 
+root_estimator:
+  smoothing_window: 9
+  smoothing_polyorder: 2
+  planarize_vertical: false
+  root_discontinuity_warning_m: 0.15
+  root_drift_score_warning: 0.05
+
+ik:
+  write_bvh: true
+  bvh_filename: pose3d_ik.bvh
+  sequence_filename: ik_sequence.npz
+  reconstruction_warning_m: 0.05
+
+imusim:
+  sensor_layout_path: pose_module/configs/sensor_layout.yaml
+  acc_noise_std_m_s2: 0.0
+  gyro_noise_std_rad_s: 0.0
+  random_seed: 0
+
 quality:
   min_visible_joint_ratio: 0.8
   min_mean_confidence: 0.5

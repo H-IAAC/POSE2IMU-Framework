@@ -9,6 +9,7 @@ __all__ = [
     "RobotEmotionsExtractor",
     "run_robot_emotions_pose2d",
     "run_robot_emotions_pose3d",
+    "run_robot_emotions_virtual_imu",
 ]
 
 
@@ -42,5 +43,9 @@ def __getattr__(name: str):
         from .pose3d import run_robot_emotions_pose3d
 
         return run_robot_emotions_pose3d
+    if name == "run_robot_emotions_virtual_imu":
+        from .virtual_imu import run_robot_emotions_virtual_imu
+
+        return run_robot_emotions_virtual_imu
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

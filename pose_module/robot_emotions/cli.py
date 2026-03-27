@@ -10,6 +10,7 @@ from typing import Optional, Sequence
 from .extractor import RobotEmotionsExtractor
 from .pose2d import run_robot_emotions_pose2d
 from .pose3d import run_robot_emotions_pose3d
+from .virtual_imu import run_robot_emotions_virtual_imu
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -77,6 +78,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(summary, indent=2, ensure_ascii=True))
         return 0
 
+    if args.command == "export-virtual-imu":
+        save_debug_2d = bool(not args.no_debug) if args.debug_2d is None else bool(args.debug_2d)
+        save_debug_3d = bool(not args.no_debug) if args.debug_3d is None else bool(args.debug_3d)
+        summary = run_robot_emotions_virtual_imu(
+            dataset_root=str(args.dataset_root),
+            output_dir=str(args.output_dir),
+            fps_target=int(args.fps_target),
+            clip_ids=None if args.clip_id is None else list(args.clip_id),
+            save_debug=bool(not args.no_debug),
+            save_debug_2d=bool(save_debug_2d),
+            save_debug_3d=bool(save_debug_3d),
+            env_name=str(args.env_name),
+            motionbert_env_name=(
+                None if args.motionbert_env_name in (None, "") else str(args.motionbert_env_name)
+            ),
+            motionbert_window_size=int(args.motionbert_window_size),
+            motionbert_window_overlap=float(args.motionbert_window_overlap),
+            include_motionbert_confidence=bool(not args.no_motionbert_confidence),
+            motionbert_device=str(args.motionbert_device),
+            allow_motionbert_fallback_backend=bool(args.allow_motionbert_fallback_backend),
+            sensor_layout_path=(
+                None if args.sensor_layout_path in (None, "") else str(args.sensor_layout_path)
+            ),
+            imu_acc_noise_std_m_s2=args.imu_acc_noise_std_m_s2,
+            imu_gyro_noise_std_rad_s=args.imu_gyro_noise_std_rad_s,
+            imu_random_seed=int(args.imu_random_seed),
+            domains=tuple(args.domains),
+        )
+        print(json.dumps(summary, indent=2, ensure_ascii=True))
+        return 0
+
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -99,9 +131,39 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     export_pose3d_parser = subparsers.add_parser(
         "export-pose3d",
-        help="Export stage-5.7 pose3d artifacts, including BVH, alongside the extracted IMU artifacts.",
+        help="Export stage-5.8 pose3d artifacts, including BVH, alongside the extracted IMU artifacts.",
     )
     _add_pose_export_arguments(export_pose3d_parser, include_motionbert_arguments=True)
+
+    export_virtual_imu_parser = subparsers.add_parser(
+        "export-virtual-imu",
+        help="Export the full stage-5.10 virtual IMU pipeline alongside the extracted real IMU artifacts.",
+    )
+    _add_pose_export_arguments(export_virtual_imu_parser, include_motionbert_arguments=True)
+    export_virtual_imu_parser.add_argument(
+        "--sensor-layout-path",
+        type=str,
+        default=None,
+        help="Optional sensor layout config path for the virtual IMU adapter.",
+    )
+    export_virtual_imu_parser.add_argument(
+        "--imu-acc-noise-std-m-s2",
+        type=float,
+        default=None,
+        help="Optional accelerometer Gaussian noise std in m/s^2.",
+    )
+    export_virtual_imu_parser.add_argument(
+        "--imu-gyro-noise-std-rad-s",
+        type=float,
+        default=None,
+        help="Optional gyroscope Gaussian noise std in rad/s.",
+    )
+    export_virtual_imu_parser.add_argument(
+        "--imu-random-seed",
+        type=int,
+        default=0,
+        help="Random seed used for optional virtual IMU noise.",
+    )
     return parser
 
 
@@ -163,28 +225,28 @@ def _add_pose_export_arguments(
         dest="debug_2d",
         action="store_true",
         default=None,
-        help="Enable the 2D debug overlay videos for export-pose3d.",
+        help="Enable the 2D debug overlay videos for the 3D-capable exports.",
     )
     parser.add_argument(
         "--no-debug-2d",
         dest="debug_2d",
         action="store_false",
         default=None,
-        help="Disable the 2D debug overlay videos for export-pose3d.",
+        help="Disable the 2D debug overlay videos for the 3D-capable exports.",
     )
     parser.add_argument(
         "--debug-3d",
         dest="debug_3d",
         action="store_true",
         default=None,
-        help="Enable the 3D debug overlay video for export-pose3d.",
+        help="Enable the 3D debug overlay video for the 3D-capable exports.",
     )
     parser.add_argument(
         "--no-debug-3d",
         dest="debug_3d",
         action="store_false",
         default=None,
-        help="Disable the 3D debug overlay video for export-pose3d.",
+        help="Disable the 3D debug overlay video for the 3D-capable exports.",
     )
     parser.add_argument(
         "--motionbert-env-name",

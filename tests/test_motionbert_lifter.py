@@ -29,6 +29,7 @@ from pose_module.motionbert.lifter import (
 )
 from pose_module.pipeline import run_pose3d_pipeline
 from pose_module.processing.metric_normalizer import BODY_METRIC_LOCAL_COORDINATE_SPACE
+from pose_module.processing.root_estimator import PSEUDO_GLOBAL_METRIC_COORDINATE_SPACE
 
 
 _MB17_BASE_POINTS = {
@@ -338,17 +339,25 @@ class Pose3DPipelineTests(unittest.TestCase):
                 list(MOTIONBERT_17_JOINT_NAMES),
             )
             self.assertEqual(result["skeleton_mapped_pose_sequence"].joint_names_3d, list(IMUGPT_22_JOINT_NAMES))
-            self.assertEqual(result["pose_sequence"].coordinate_space, BODY_METRIC_LOCAL_COORDINATE_SPACE)
+            self.assertEqual(result["pose_sequence"].coordinate_space, PSEUDO_GLOBAL_METRIC_COORDINATE_SPACE)
+            self.assertEqual(result["metric_pose_sequence"].coordinate_space, BODY_METRIC_LOCAL_COORDINATE_SPACE)
+            self.assertEqual(result["root_trajectory_quality_report"]["coordinate_space"], PSEUDO_GLOBAL_METRIC_COORDINATE_SPACE)
+            self.assertTrue(result["root_trajectory_quality_report"]["root_translation_ok"])
+            self.assertEqual(result["pose_sequence"].root_translation_m.shape, (60, 3))
             self.assertTrue(Path(result["artifacts"]["pose3d_motionbert17_npz_path"]).exists())
             self.assertTrue(Path(result["artifacts"]["pose3d_motionbert17_stabilized_npz_path"]).exists())
+            self.assertTrue(Path(result["artifacts"]["pose3d_metric_local_npz_path"]).exists())
             self.assertTrue(Path(result["artifacts"]["lower_limb_stabilizer_report_json_path"]).exists())
+            self.assertTrue(Path(result["artifacts"]["root_translation_npy_path"]).exists())
             self.assertTrue(result["quality_report"]["skeleton_mapping_ok"])
             self.assertTrue(result["quality_report"]["metric_pose_ok"])
+            self.assertTrue(result["quality_report"]["root_translation_ok"])
             self.assertEqual(result["quality_report"]["metric_normalizer_target_tibia_length_m"], 0.4)
             self.assertEqual(
                 result["metric_normalization_quality_report"]["coordinate_space"],
                 BODY_METRIC_LOCAL_COORDINATE_SPACE,
             )
+            self.assertEqual(result["quality_report"]["pose3d_coordinate_space"], PSEUDO_GLOBAL_METRIC_COORDINATE_SPACE)
 
     def test_run_pose3d_pipeline_exports_side_by_side_raw_3d_debug_video(self) -> None:
         sequence = _make_motionbert_sequence(24)

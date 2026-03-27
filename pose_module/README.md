@@ -9,6 +9,9 @@ Este modulo documenta como rodar o pipeline de pose implementado ate agora. No m
 - `5.5 motionbert_3d_lifter`
 - `5.6 skeleton_mapper`
 - `5.7 metric_normalizer`
+- `5.8 root_trajectory_estimator`
+- `5.9 ik_adapter`
+- `5.10 imusim_adapter`
 
 ## O que esta implementado
 
@@ -23,11 +26,14 @@ Fluxo atual:
 - lifting 3D por janelas deslizantes no contrato `MotionBERT`
 - mapeamento estrito `MB17 -> IMUGPT22`
 - normalizacao metrica local no referencial do corpo
-- exportacao de `pose/pose2d.npz`, `pose/pose3d.npz` e artefatos auxiliares
+- estimativa de `root_translation_m` e composicao pseudo-global para downstream
+- adaptacao da pose pseudo-global para o contrato de IK, com BVH e sequencia local de rotacoes
+- sintese de IMU virtual a partir do resultado de IK e de um `sensor_layout`
+- exportacao de `pose/pose2d.npz`, `pose/pose3d.npz`, `pose/pose3d_metric_local.npz`, `pose/ik_sequence.npz`, `pose/virtual_imu.npz` e artefatos auxiliares
 
 ## Estrutura do modulo
 
-- `pose_module/pipeline.py`: orquestracao das etapas 5.1 a 5.7
+- `pose_module/pipeline.py`: orquestracao das etapas 5.1 a 5.10
 - `pose_module/interfaces.py`: contratos e estruturas canonicas
 - `pose_module/model_registry.py`: resolucao dos modelos locais em `pose_module/checkpoints/`
 - `pose_module/openmmlab_runtime.py`: selecao compartilhada do Python do env `openmmlab`
@@ -41,11 +47,17 @@ Fluxo atual:
 - `pose_module/motionbert/lifter.py`: lifting 3D temporal e exportacao de artefatos da etapa 5.5
 - `pose_module/processing/skeleton_mapper.py`: expansao deterministica de `motionbert17` para `IMUGPT22`
 - `pose_module/processing/metric_normalizer.py`: referencial corporal + escala antropometrica + suavizacao da etapa 5.7
+- `pose_module/processing/root_estimator.py`: estimativa da trajetoria do root e composicao pseudo-global da etapa 5.8
+- `pose_module/export/ik_adapter.py`: adaptacao da pose pseudo-global para rotacoes locais, offsets e BVH da etapa 5.9
+- `pose_module/export/imusim_adapter.py`: sintese de IMU virtual a partir do contrato de IK e `sensor_layout` da etapa 5.10
 - `pose_module/processing/temporal_filters.py`: interpolacao e suavizacao temporal
 - `pose_module/processing/quality.py`: consolidacao de relatorios
 - `pose_module/robot_emotions/extractor.py`: scanner e export especificos do dataset
 - `pose_module/robot_emotions/pose2d.py`: wrapper do dataset sobre o pipeline generico
+- `pose_module/robot_emotions/pose3d.py`: export do pipeline completo ate a etapa 5.8
+- `pose_module/robot_emotions/virtual_imu.py`: export do pipeline completo ate a etapa 5.10
 - `pose_module/robot_emotions/cli.py`: CLI atual
+- `pose_module/configs/sensor_layout.yaml`: layout padrao dos sensores virtuais
 
 ## Pre-requisitos
 
@@ -96,6 +108,7 @@ A CLI atual expõe:
 - `export-imu`
 - `export-pose2d`
 - `export-pose3d`
+- `export-virtual-imu`
 
 ### 4. Listar os clipes do dataset
 
@@ -170,7 +183,7 @@ Selecao de ambiente do backend (`--env-name`):
 - `current`: usa somente o Python atual
 - `<nome_do_env_conda>`: usa somente o Python do env Conda informado
 
-### 7. Rodar o pipeline completo 5.1 a 5.7 pela CLI
+### 7. Rodar o pipeline 3D completo 5.1 a 5.8 pela CLI
 
 O comando abaixo executa o fluxo completo com MotionBERT:
 
@@ -208,9 +221,36 @@ Para gerar apenas o debug 3D, sem os videos 2D:
   --debug-3d
 ```
 
-Esse fluxo gera os artefatos 3D das etapas `5.5`, `5.6` e `5.7`, com `pose3d.npz` no contrato final `IMUGPT22` em `body_metric_local`, `pose3d_motionbert17.npz` preservando a saida MB17 bruta do MotionBERT, `3d_keypoints_raw.npy`, `3d_keypoints_metric.npy`, `motionbert_run.json` e, quando habilitado, um debug side-by-side com 2D clean + 3D raw/final.
+Esse fluxo gera os artefatos 3D das etapas `5.5`, `5.6`, `5.7` e `5.8`, com `pose3d.npz` no contrato final `IMUGPT22` em `pseudo_global_metric`, `pose3d_metric_local.npz` preservando a saida local metrica da etapa 5.7, `pose3d_motionbert17.npz` preservando a saida MB17 bruta do MotionBERT, `3d_keypoints_raw.npy`, `3d_keypoints_metric.npy`, `root_translation.npy`, `motionbert_run.json` e, quando habilitado, um debug side-by-side com 2D clean + 3D raw/final.
 
-### 8. Exportar BVH pela CLI (arquivo customizado)
+### 8. Rodar o pipeline completo 5.1 a 5.10 pela CLI
+
+O comando abaixo fecha o pipeline com `IK` e `IMUSim`, preservando tambem os artefatos 3D intermediarios:
+
+```bash
+.venv/bin/python -m pose_module.robot_emotions \
+  export-virtual-imu \
+  --dataset-root data/RobotEmotions \
+  --output-dir output/robot_emotions_virtual_imu \
+  --env-name openmmlab
+```
+
+  --clip-id robot_emotions_10ms_u02_tag05 \
+
+Flags uteis do `export-virtual-imu`:
+
+- `--sensor-layout-path <arquivo>`: usa um layout customizado de sensores virtuais
+- `--imu-acc-noise-std-m-s2 <float>`: injeta ruido gaussiano no acelerometro
+- `--imu-gyro-noise-std-rad-s <float>`: injeta ruido gaussiano no giroscopio
+- `--imu-random-seed <int>`: fixa a seed do ruido opcional
+- `--debug-2d` / `--no-debug-2d`: controla os overlays 2D do trecho 3D do pipeline
+- `--debug-3d` / `--no-debug-3d`: controla os overlays 3D do trecho 3D do pipeline
+
+Esse fluxo gera os artefatos finais das etapas `5.9` e `5.10`, incluindo `ik_sequence.npz`, `pose3d_ik.bvh`, `virtual_imu.npz`, `virtual_imu_report.json`, `sensor_layout_resolved.json` e um `quality_report.json` consolidado com pose 3D, IK e IMU virtual.
+
+O `sensor_layout` padrao fica em `pose_module/configs/sensor_layout.yaml` e replica o arranjo de 4 sensores do `RobotEmotions` (`waist`, `head`, `right_forearm`, `left_forearm`). Se o seu downstream exigir outro arranjo, troque esse arquivo pelo layout correspondente.
+
+### 9. Exportar BVH pela CLI (arquivo customizado)
 
 Voce pode exportar qualquer `pose3d.npz` (incluindo esqueletos diferentes, como `motionbert17`) para BVH com caminho de saida customizado:
 
@@ -287,16 +327,36 @@ Na raiz da exportacao:
 - `pose3d_manifest.jsonl`
 - `pose3d_summary.json`
 
-Quando voce roda o pipeline completo ate a etapa `5.7`, os arquivos abaixo sao adicionados ao diretorio `pose/`:
+Quando voce roda o pipeline completo ate a etapa `5.8`, os arquivos abaixo sao adicionados ao diretorio `pose/`:
 
 - `pose/pose3d.npz`
+- `pose/pose3d_metric_local.npz`
 - `pose/pose3d_motionbert17.npz`
 - `pose/pose3d.bvh`
 - `pose/3d_keypoints_raw.npy`
 - `pose/3d_keypoints_metric.npy`
+- `pose/root_translation.npy`
 - `pose/motionbert_run.json`
 - `pose/debug_overlay_pose3d_raw.mp4` quando `save_debug=true` ou `save_debug_3d=true`
 - `pose/debug_overlay_pose3d_imugpt22.mp4` quando `save_debug=true` ou `save_debug_3d=true`
+
+### Saidas do `export-virtual-imu`
+
+Na raiz da exportacao:
+
+- `virtual_imu_manifest.jsonl`
+- `virtual_imu_summary.json`
+
+Quando voce roda o pipeline completo ate a etapa `5.10`, os arquivos abaixo sao adicionados ao diretorio `pose/`:
+
+- todos os artefatos do `export-pose3d`
+- `pose/ik_sequence.npz`
+- `pose/ik_report.json`
+- `pose/pose3d_ik.bvh`
+- `pose/virtual_imu.npz`
+- `pose/virtual_imu_report.json`
+- `pose/sensor_layout_resolved.json`
+- `pose/quality_report.json`
 
 No pipeline 3D, os overlays 2D e 3D podem ser controlados separadamente com `save_debug_2d` e `save_debug_3d`.
 
@@ -328,6 +388,14 @@ No `pose/pose3d.npz`:
 - `joint_positions_xyz`: `np.ndarray[T, 22, 3]`
 - `joint_confidence`: `np.ndarray[T, 22]`
 - `skeleton_parents`: `np.ndarray[22]`
+- `root_translation_m`: `np.ndarray[T, 3]`
+- `coordinate_space`: `pseudo_global_metric`
+
+No `pose/pose3d_metric_local.npz`:
+
+- `joint_positions_xyz`: `np.ndarray[T, 22, 3]`
+- `joint_confidence`: `np.ndarray[T, 22]`
+- `skeleton_parents`: `np.ndarray[22]`
 - `coordinate_space`: `body_metric_local`
 
 No `pose/pose3d_motionbert17.npz`:
@@ -336,13 +404,34 @@ No `pose/pose3d_motionbert17.npz`:
 - `joint_confidence`: `np.ndarray[T, 17]`
 - `skeleton_parents`: `np.ndarray[17]`
 
-Nos artefatos auxiliares das etapas 5.5, 5.6 e 5.7:
+No `pose/ik_sequence.npz`:
+
+- `local_joint_rotations`: `np.ndarray[T, 22, 4]` em quaternions locais no contrato do IK
+- `root_translation_m`: `np.ndarray[T, 3]`
+- `joint_offsets_m`: `np.ndarray[22, 3]`
+- `skeleton_parents`: `np.ndarray[22]`
+- `joint_names_3d`: `np.ndarray[22]`
+
+No `pose/virtual_imu.npz`:
+
+- `acc`: `np.ndarray[T, S, 3]`
+- `gyro`: `np.ndarray[T, S, 3]`
+- `sensor_names`: `np.ndarray[S]`
+- `timestamps_sec`: `np.ndarray[T]`
+
+Nos artefatos auxiliares das etapas 5.5, 5.6, 5.7, 5.8, 5.9 e 5.10:
 
 - `3d_keypoints_raw.npy`: `np.ndarray[T, 17, 3]` em referencial de camera
 - `3d_keypoints_metric.npy`: `np.ndarray[T, 22, 3]` apos normalizacao metrica local e suavizacao temporal
+- `root_translation.npy`: `np.ndarray[T, 3]` com a trajetoria pseudo-global estimada do pelvis/root
 - `motionbert_run.json`: resumo do backend, janelas e qualidade do lifting 3D
+- `ik_report.json`: resumo da adaptacao para IK, incluindo erro medio de reconstrucao
+- `pose3d_ik.bvh`: export BVH derivado da saida pseudo-global final
+- `virtual_imu_report.json`: resumo da sintese de IMU virtual e faixas dinamicas dos sensores
+- `sensor_layout_resolved.json`: layout de sensores efetivamente resolvido contra o esqueleto IMUGPT22
+- `quality_report.json`: consolidacao final da qualidade do clip, incluindo pose 3D, IK e IMU virtual
 - `debug_overlay_pose3d_raw.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D raw do MotionBERT
-- `debug_overlay_pose3d_imugpt22.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D final no esqueleto IMUGPT22 apos a etapa 5.7
+- `debug_overlay_pose3d_imugpt22.mp4`: video lado a lado com o video original + pose 2D clean e a pose 3D local metrica no esqueleto IMUGPT22 apos a etapa 5.7
 
 No comando `export-pose3d`, voce pode controlar os overlays separadamente com `--debug-2d` / `--no-debug-2d` e `--debug-3d` / `--no-debug-3d`.
 
@@ -361,7 +450,5 @@ No comando `export-pose3d`, voce pode controlar os overlays separadamente com `-
 - o fallback heuristico existe apenas como opcional e fica desabilitado por padrao
 - o fluxo padrao exporta todos os clipes encontrados nos dominios selecionados
 - para restringir a execucao, use `--clip-id` ou `--domains`
-- as proximas etapas do pipeline ainda nao foram implementadas aqui:
-  - `root_trajectory_estimator`
-  - `ik_adapter`
-  - `imusim_adapter`
+- o `export-pose3d` termina na etapa `5.8`, preservando a pose pseudo-global final
+- o `export-virtual-imu` fecha o pipeline ate `5.10`, reutilizando a mesma saida 3D final

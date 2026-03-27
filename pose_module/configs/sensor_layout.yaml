@@ -1,0 +1,34 @@
+{
+  "dataset": "RobotEmotions",
+  "gravity_m_s2": [0.0, -9.81, 0.0],
+  "default_acc_noise_std_m_s2": 0.0,
+  "default_gyro_noise_std_rad_s": 0.0,
+  "sensors": [
+    {
+      "name": "waist",
+      "attach_joint": "Pelvis",
+      "offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "name": "head",
+      "segment_start_joint": "Neck",
+      "segment_end_joint": "Head",
+      "segment_fraction": 1.0,
+      "orientation_joint": "Neck"
+    },
+    {
+      "name": "right_forearm",
+      "segment_start_joint": "Right_elbow",
+      "segment_end_joint": "Right_wrist",
+      "segment_fraction": 0.5,
+      "orientation_joint": "Right_elbow"
+    },
+    {
+      "name": "left_forearm",
+      "segment_start_joint": "Left_elbow",
+      "segment_end_joint": "Left_wrist",
+      "segment_fraction": 0.5,
+      "orientation_joint": "Left_elbow"
+    }
+  ]
+}
