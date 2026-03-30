@@ -237,17 +237,6 @@ O comando abaixo fecha o pipeline com `IK` e `IMUSim`, preservando tambem os art
   --no-debug-2d --no-debug-3d
 ```  
 
-.venv/bin/python -m pose_module.robot_emotions export-virtual-imu \
-  --dataset-root data/RobotEmotions \
-  --output-dir output/robot_emotions_virtual_imu_cal \
-  --clip-id robot_emotions_10ms_u02_tag01 \
-  --fps-target 20 \
-  --real-imu-label-key action \
-  --real-imu-signal-mode both \
-  --real-imu-percentile-resolution 100 \
-  --no-debug
-
-
 Flags uteis do `export-virtual-imu`:
 
 - `--sensor-layout-path <arquivo>`: usa um layout customizado de sensores virtuais
