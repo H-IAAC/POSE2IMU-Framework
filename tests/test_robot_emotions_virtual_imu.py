@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from pose_module.interfaces import (
     IKSequence,
@@ -86,6 +87,70 @@ def _make_ik_sequence() -> IKSequence:
     )
 
 
+def _apply_rotation(values_xyz: np.ndarray, rotation_matrix: np.ndarray) -> np.ndarray:
+    return np.asarray(values_xyz, dtype=np.float32) @ np.asarray(rotation_matrix, dtype=np.float32).T
+
+
+def _shift_signal(values_xyz: np.ndarray, lag_samples: int) -> np.ndarray:
+    values = np.asarray(values_xyz, dtype=np.float32)
+    shifted = np.zeros_like(values)
+    if lag_samples > 0:
+        shifted[lag_samples:] = values[:-lag_samples]
+    elif lag_samples < 0:
+        lag = abs(lag_samples)
+        shifted[:-lag] = values[lag:]
+    else:
+        shifted[:] = values
+    return shifted
+
+
+def _sensor_waveforms(timestamps: np.ndarray, *, capture_offset: float) -> tuple[np.ndarray, np.ndarray]:
+    t = np.asarray(timestamps, dtype=np.float32)
+    gyro = np.stack(
+        [
+            0.65 * np.sin(1.4 * t + 0.4) + 0.18 * np.cos(0.4 * t + capture_offset),
+            0.52 * np.cos(1.0 * t + 0.2) + 0.12 * np.sin(1.7 * t + capture_offset),
+            0.48 * np.sin(1.8 * t + 0.1 + capture_offset),
+        ],
+        axis=1,
+    ).astype(np.float32)
+    acc = np.stack(
+        [
+            0.34 * np.sin(0.8 * t + 0.4) + 0.07 * np.cos(0.2 * t + capture_offset),
+            9.81 + 0.21 * np.cos(0.6 * t + capture_offset) + 0.06 * np.sin(1.2 * t + 0.4),
+            0.28 * np.sin(0.55 * t + 0.1) + 0.09 * np.cos(0.9 * t + capture_offset),
+        ],
+        axis=1,
+    ).astype(np.float32)
+    return acc, gyro
+
+
+def _make_virtual_and_real_sequences(
+    *,
+    clip_id: str,
+    rotation_matrix: np.ndarray,
+    lag_samples: int,
+    capture_offset: float,
+) -> tuple[VirtualIMUSequence, np.ndarray, np.ndarray, np.ndarray]:
+    virtual_timestamps = np.arange(240, dtype=np.float32) / np.float32(20.0)
+    real_timestamps = np.arange(0.0, 12.0, 0.01, dtype=np.float32)
+    virtual_acc, virtual_gyro = _sensor_waveforms(virtual_timestamps, capture_offset=capture_offset)
+    real_acc_base, real_gyro_base = _sensor_waveforms(real_timestamps, capture_offset=capture_offset)
+    real_lag_samples = int(round(float(lag_samples) * (0.05 / 0.01)))
+    real_acc = _shift_signal(_apply_rotation(real_acc_base, rotation_matrix), real_lag_samples)[:, None, :]
+    real_gyro = _shift_signal(_apply_rotation(real_gyro_base, rotation_matrix), real_lag_samples)[:, None, :]
+    virtual_sequence = VirtualIMUSequence(
+        clip_id=clip_id,
+        fps=20.0,
+        sensor_names=["left_forearm"],
+        acc=virtual_acc[:, None, :],
+        gyro=virtual_gyro[:, None, :],
+        timestamps_sec=virtual_timestamps,
+        source="unit_test_virtual_imu",
+    )
+    return virtual_sequence, real_acc, real_gyro, real_timestamps
+
+
 class _FakeExtractor:
     def __init__(self, dataset_root: str, *, domains: tuple[str, ...]) -> None:
         self.dataset_root = dataset_root
@@ -149,14 +214,18 @@ class RobotEmotionsVirtualIMUTests(unittest.TestCase):
                     "pose_module.robot_emotions.virtual_imu.run_virtual_imu_pipeline",
                     return_value=fake_pipeline_result,
                 ) as mocked_pipeline:
-                    summary = run_robot_emotions_virtual_imu(
-                        dataset_root="data/RobotEmotions",
-                        output_dir=tmp_dir,
-                        clip_ids=[record.clip_id],
-                        env_name="openmmlab",
-                        estimate_sensor_frame=True,
-                        estimate_sensor_names=["left_forearm", "right_forearm"],
-                    )
+                    with patch(
+                        "pose_module.robot_emotions.virtual_imu.load_alignment_runtime_settings",
+                        return_value={"enable": False, "fit_from_current_pair": False},
+                    ):
+                        summary = run_robot_emotions_virtual_imu(
+                            dataset_root="data/RobotEmotions",
+                            output_dir=tmp_dir,
+                            clip_ids=[record.clip_id],
+                            env_name="openmmlab",
+                            estimate_sensor_frame=True,
+                            estimate_sensor_names=["left_forearm", "right_forearm"],
+                        )
 
             self.assertEqual(summary["num_ok"], 1)
             manifest_path = Path(summary["virtual_imu_manifest_path"])
@@ -205,3 +274,160 @@ class RobotEmotionsVirtualIMUTests(unittest.TestCase):
             ["left_forearm", "right_forearm"],
         )
         mocked_print.assert_called_once()
+
+    def test_run_robot_emotions_virtual_imu_fits_subject_level_geometric_alignment(self) -> None:
+        record_a = _make_record("robot_emotions_10ms_u02_tag05")
+        record_b = _make_record("robot_emotions_10ms_u02_tag06")
+        rotation_matrix = Rotation.from_euler("xyz", [18.0, -12.0, 26.0], degrees=True).as_matrix().astype(
+            np.float32
+        )
+        virtual_a, real_acc_a, real_gyro_a, timestamps_a = _make_virtual_and_real_sequences(
+            clip_id=record_a.clip_id,
+            rotation_matrix=rotation_matrix,
+            lag_samples=3,
+            capture_offset=0.2,
+        )
+        virtual_b, real_acc_b, real_gyro_b, timestamps_b = _make_virtual_and_real_sequences(
+            clip_id=record_b.clip_id,
+            rotation_matrix=rotation_matrix,
+            lag_samples=-2,
+            capture_offset=0.8,
+        )
+        virtual_by_clip = {
+            record_a.clip_id: virtual_a,
+            record_b.clip_id: virtual_b,
+        }
+        real_by_clip = {
+            record_a.clip_id: (real_acc_a, real_gyro_a, timestamps_a),
+            record_b.clip_id: (real_acc_b, real_gyro_b, timestamps_b),
+        }
+
+        class _TwoClipExtractor:
+            def __init__(self, dataset_root: str, *, domains: tuple[str, ...]) -> None:
+                self.dataset_root = dataset_root
+                self.domains = domains
+
+            def select_records(self, *, clip_ids=None):
+                records = [record_a, record_b]
+                if clip_ids is None:
+                    return records
+                requested = set(clip_ids)
+                return [record for record in records if record.clip_id in requested]
+
+            def ensure_exported_clip(self, record: RobotEmotionsClipRecord, *, output_root: str | Path):
+                clip_dir = Path(output_root) / record.domain / f"user_{record.user_id:02d}" / record.clip_id
+                clip_dir.mkdir(parents=True, exist_ok=True)
+                real_acc, real_gyro, timestamps = real_by_clip[record.clip_id]
+                imu_npz_path = clip_dir / "imu.npz"
+                np.savez_compressed(
+                    imu_npz_path,
+                    acc=real_acc,
+                    gyro=real_gyro,
+                    timestamps_sec=timestamps,
+                    sensor_names=np.asarray(["left_forearm"]),
+                )
+                metadata_json_path = clip_dir / "metadata.json"
+                metadata_json_path.write_text(
+                    json.dumps(
+                        {
+                            "domain": record.domain,
+                            "user_id": record.user_id,
+                            "clip_id": record.clip_id,
+                            "imu": {"sensor_names": ["left_forearm"]},
+                        },
+                        ensure_ascii=True,
+                    ),
+                    encoding="utf-8",
+                )
+                return {
+                    "labels": {"emotion": "Joy"},
+                    "source": {"video_path": str(record.video_path)},
+                    "video": {"fps": 30.0, "num_frames": int(timestamps.shape[0]), "duration_sec": 12.0},
+                    "artifacts": {
+                        "imu_npz_path": str(imu_npz_path.resolve()),
+                        "metadata_json_path": str(metadata_json_path.resolve()),
+                    },
+                }
+
+        def _fake_pipeline(*, clip_id: str, output_dir: str | Path, **kwargs):
+            pose_dir = Path(output_dir)
+            pose_dir.mkdir(parents=True, exist_ok=True)
+            virtual_sequence = virtual_by_clip[clip_id]
+            np.savez_compressed(pose_dir / "virtual_imu.npz", **virtual_sequence.to_npz_payload())
+            return {
+                "clip_id": clip_id,
+                "pose_sequence": _make_pose3d_sequence(),
+                "virtual_imu_sequence": virtual_sequence,
+                "ik_sequence": _make_ik_sequence(),
+                "quality_report": {"clip_id": clip_id, "status": "ok", "notes": []},
+                "pose3d_quality_report": {"clip_id": clip_id, "status": "ok", "notes": []},
+                "ik_quality_report": {"clip_id": clip_id, "status": "ok", "ik_ok": True, "notes": []},
+                "virtual_imu_quality_report": {
+                    "clip_id": clip_id,
+                    "status": "ok",
+                    "virtual_imu_ok": True,
+                    "acc_noise_std_m_s2": 0.0,
+                    "gyro_noise_std_rad_s": 0.0,
+                    "notes": [],
+                },
+                "frame_alignment_quality_report": {"enabled": False, "status": None, "notes": []},
+                "virtual_imu_calibration_report": None,
+                "geometric_alignment_quality_report": {"enabled": False, "status": None, "notes": []},
+                "artifacts": {
+                    "virtual_imu_npz_path": str((pose_dir / "virtual_imu.npz").resolve()),
+                    "quality_report_json_path": str((pose_dir / "quality_report.json").resolve()),
+                },
+                "imusim_result": {
+                    "virtual_imu_sequence": virtual_sequence,
+                    "raw_virtual_imu_sequence": virtual_sequence,
+                    "quality_report": {
+                        "clip_id": clip_id,
+                        "status": "ok",
+                        "virtual_imu_ok": True,
+                        "acc_noise_std_m_s2": 0.0,
+                        "gyro_noise_std_rad_s": 0.0,
+                        "notes": [],
+                    },
+                    "calibration_report": None,
+                    "artifacts": {
+                        "virtual_imu_npz_path": str((pose_dir / "virtual_imu.npz").resolve()),
+                        "virtual_imu_report_json_path": str((pose_dir / "virtual_imu_report.json").resolve()),
+                        "virtual_imu_calibration_report_json_path": None,
+                    },
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("pose_module.robot_emotions.virtual_imu.RobotEmotionsExtractor", _TwoClipExtractor):
+                with patch(
+                    "pose_module.robot_emotions.virtual_imu.run_virtual_imu_pipeline",
+                    side_effect=_fake_pipeline,
+                ):
+                    with patch(
+                        "pose_module.robot_emotions.virtual_imu.load_alignment_runtime_settings",
+                        return_value={"enable": True, "fit_from_current_pair": False},
+                    ):
+                        summary = run_robot_emotions_virtual_imu(
+                            dataset_root="data/RobotEmotions",
+                            output_dir=tmp_dir,
+                            clip_ids=[record_a.clip_id, record_b.clip_id],
+                            env_name="openmmlab",
+                        )
+
+            self.assertEqual(summary["num_ok"], 2)
+            transform_path = Path(tmp_dir) / "10ms" / "user_02" / "imu_alignment_transforms.json"
+            self.assertTrue(transform_path.exists())
+            manifest_entries = [
+                json.loads(line)
+                for line in Path(summary["virtual_imu_manifest_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip() != ""
+            ]
+            self.assertEqual(len(manifest_entries), 2)
+            for entry in manifest_entries:
+                quality = entry["quality_report"]
+                self.assertTrue(quality["geometric_alignment_enabled"])
+                self.assertEqual(quality["geometric_alignment_status"], "ok")
+                self.assertGreater(
+                    float(quality["geometric_alignment_mean_gyro_corr_after"]),
+                    float(quality["geometric_alignment_mean_gyro_corr_before"]),
+                )

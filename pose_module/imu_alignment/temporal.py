@@ -6,6 +6,74 @@ from typing import Tuple
 
 import numpy as np
 
+from pose_module.processing.frequency_alignment import (
+    estimate_sampling_frequency_hz,
+    undersample_signal_to_reference,
+)
+
+from .interfaces import IMUSequence
+
+_TIMESTAMP_ATOL = 1e-5
+_TIMESTAMP_RTOL = 1e-4
+
+
+def prepare_sequences_for_alignment(
+    real_sequence: IMUSequence,
+    virt_sequence: IMUSequence,
+) -> tuple[IMUSequence, IMUSequence, dict[str, float | int | bool | None]]:
+    """Project the real sequence onto the virtual timestamps when needed.
+
+    The geometric alignment logic operates on paired sample grids. In the real
+    RobotEmotions exports the reference IMU is sampled more densely than the
+    virtual IMU, so we first resample the real stream onto the virtual
+    timestamps using nearest-neighbor matching.
+    """
+
+    if _timestamps_match(real_sequence.timestamps, virt_sequence.timestamps):
+        return real_sequence, virt_sequence, {
+            "resampled": False,
+            "real_original_frames": int(real_sequence.num_frames),
+            "real_aligned_frames": int(real_sequence.num_frames),
+            "virtual_frames": int(virt_sequence.num_frames),
+            "real_original_frequency_hz": _estimate_frequency_or_none(real_sequence.timestamps),
+            "real_aligned_frequency_hz": _estimate_frequency_or_none(real_sequence.timestamps),
+            "virtual_frequency_hz": _estimate_frequency_or_none(virt_sequence.timestamps),
+            "mean_time_error_ms": 0.0,
+            "max_time_error_ms": 0.0,
+        }
+
+    aligned_acc = undersample_signal_to_reference(
+        source_timestamps_sec=real_sequence.timestamps,
+        source_values=real_sequence.acc,
+        reference_timestamps_sec=virt_sequence.timestamps,
+    )
+    aligned_gyro = undersample_signal_to_reference(
+        source_timestamps_sec=real_sequence.timestamps,
+        source_values=real_sequence.gyro,
+        reference_timestamps_sec=virt_sequence.timestamps,
+    )
+    time_error_ms = np.abs(np.asarray(aligned_acc["time_error_sec"], dtype=np.float64)) * 1000.0
+    aligned_real_sequence = IMUSequence(
+        subject_id=real_sequence.subject_id,
+        capture_id=real_sequence.capture_id,
+        sensor_names=list(real_sequence.sensor_names),
+        fps=virt_sequence.fps,
+        timestamps=np.asarray(virt_sequence.timestamps, dtype=np.float32),
+        acc=np.asarray(aligned_acc["values"], dtype=np.float32),
+        gyro=np.asarray(aligned_gyro["values"], dtype=np.float32),
+    )
+    return aligned_real_sequence, virt_sequence, {
+        "resampled": True,
+        "real_original_frames": int(real_sequence.num_frames),
+        "real_aligned_frames": int(aligned_real_sequence.num_frames),
+        "virtual_frames": int(virt_sequence.num_frames),
+        "real_original_frequency_hz": _estimate_frequency_or_none(real_sequence.timestamps),
+        "real_aligned_frequency_hz": _estimate_frequency_or_none(aligned_real_sequence.timestamps),
+        "virtual_frequency_hz": _estimate_frequency_or_none(virt_sequence.timestamps),
+        "mean_time_error_ms": None if time_error_ms.size == 0 else float(np.mean(time_error_ms)),
+        "max_time_error_ms": None if time_error_ms.size == 0 else float(np.max(time_error_ms)),
+    }
+
 
 def estimate_time_lag(
     real_xyz: np.ndarray,
@@ -86,3 +154,19 @@ def _centered_correlation(x: np.ndarray, y: np.ndarray) -> float:
     if denominator <= 0.0:
         return -np.inf
     return float(np.dot(x_centered, y_centered) / denominator)
+
+
+def _timestamps_match(real_timestamps: np.ndarray, virt_timestamps: np.ndarray) -> bool:
+    real = np.asarray(real_timestamps, dtype=np.float64)
+    virt = np.asarray(virt_timestamps, dtype=np.float64)
+    return real.shape == virt.shape and np.allclose(real, virt, atol=_TIMESTAMP_ATOL, rtol=_TIMESTAMP_RTOL)
+
+
+def _estimate_frequency_or_none(timestamps: np.ndarray) -> float | None:
+    values = np.asarray(timestamps, dtype=np.float64)
+    if values.ndim != 1 or values.shape[0] < 2:
+        return None
+    try:
+        return float(estimate_sampling_frequency_hz(values))
+    except ValueError:
+        return None

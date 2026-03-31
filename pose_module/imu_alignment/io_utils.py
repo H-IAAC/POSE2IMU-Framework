@@ -242,7 +242,7 @@ def _default_runtime_settings(config_path: Path | None) -> dict[str, Any]:
         "output_dir": "./output/imu_alignment",
         "save_transforms": True,
         "save_metrics": True,
-        "fit_from_current_pair": True,
+        "fit_from_current_pair": False,
         "transforms_path": None,
         "config_path": None if config_path is None else str(config_path.resolve()),
     }

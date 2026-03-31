@@ -1,7 +1,7 @@
 # Configuracao do modulo de alinhamento geometrico IMU.
 # Mantido desligado por padrao para nao alterar pipelines existentes.
 
-enable: false
+enable: true
 
 enable_time_lag_estimation: true
 enable_rotation_alignment: true
@@ -24,5 +24,5 @@ ridge_lambda: 1.0e-6
 output_dir: "./output/imu_alignment"
 save_transforms: true
 save_metrics: true
-fit_from_current_pair: true
+fit_from_current_pair: false
 transforms_path: null

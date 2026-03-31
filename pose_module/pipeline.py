@@ -466,12 +466,13 @@ def run_virtual_imu_pipeline(
         real_imu_percentile_resolution=int(real_imu_percentile_resolution),
         real_imu_per_class_calibration=bool(real_imu_per_class_calibration),
     )
+    resolved_real_imu_npz_path = _resolve_real_imu_npz_path(output_dir=output_dir)
     geometric_alignment_settings = load_alignment_runtime_settings(None)
     if bool(geometric_alignment_settings.get("enable", False)):
-        geometric_alignment_result = run_geometric_alignment(
-            virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+        geometric_alignment_result = _run_optional_geometric_alignment(
+            raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
             output_dir=output_dir,
-            real_imu_npz_path=_resolve_real_imu_npz_path(output_dir=output_dir),
+            real_imu_npz_path=resolved_real_imu_npz_path,
         )
     else:
         geometric_alignment_result = _build_disabled_geometric_alignment_result(
@@ -511,7 +512,7 @@ def run_virtual_imu_pipeline(
             target_sensor_names=DEFAULT_TARGET_SENSOR_NAMES
             if estimate_sensor_names is None
             else estimate_sensor_names,
-            real_imu_npz_path=_resolve_real_imu_npz_path(output_dir=output_dir),
+            real_imu_npz_path=resolved_real_imu_npz_path,
             output_dir=output_dir,
         )
     merged_quality = merge_stage510_quality_reports(
@@ -658,6 +659,27 @@ def _resolve_real_imu_npz_path(*, output_dir: Path) -> str | None:
     return None
 
 
+def _run_optional_geometric_alignment(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    output_dir: Path,
+    real_imu_npz_path: str | None,
+) -> Dict[str, Any]:
+    try:
+        return run_geometric_alignment(
+            virtual_imu_sequence=raw_virtual_imu_sequence,
+            output_dir=output_dir,
+            real_imu_npz_path=real_imu_npz_path,
+        )
+    except Exception as exc:
+        return _build_failed_geometric_alignment_result(
+            raw_virtual_imu_sequence=raw_virtual_imu_sequence,
+            output_dir=output_dir,
+            error=str(exc),
+            real_imu_npz_path=real_imu_npz_path,
+        )
+
+
 def _run_optional_sensor_frame_estimation(
     *,
     raw_virtual_imu_sequence: VirtualIMUSequence,
@@ -753,6 +775,56 @@ def _build_disabled_geometric_alignment_result(
             "imu_alignment_metrics_json_path": None,
             "imu_alignment_quality_report_json_path": None,
             "imu_alignment_config_path": config_path,
+        },
+    }
+
+
+def _build_failed_geometric_alignment_result(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    output_dir: Path,
+    error: str,
+    real_imu_npz_path: str | None,
+) -> Dict[str, Any]:
+    del output_dir
+    aligned_virtual_imu_sequence = VirtualIMUSequence(
+        clip_id=str(raw_virtual_imu_sequence.clip_id),
+        fps=None if raw_virtual_imu_sequence.fps is None else float(raw_virtual_imu_sequence.fps),
+        sensor_names=list(raw_virtual_imu_sequence.sensor_names),
+        acc=np.asarray(raw_virtual_imu_sequence.acc, dtype=np.float32),
+        gyro=np.asarray(raw_virtual_imu_sequence.gyro, dtype=np.float32),
+        timestamps_sec=np.asarray(raw_virtual_imu_sequence.timestamps_sec, dtype=np.float32),
+        source=str(raw_virtual_imu_sequence.source),
+    )
+    notes = [f"geometric_alignment_failed:{error}"]
+    quality_report = {
+        "enabled": True,
+        "status": "warning",
+        "subject_id": None,
+        "capture_id": str(raw_virtual_imu_sequence.clip_id),
+        "transform_source": None,
+        "real_imu_npz_path": real_imu_npz_path,
+        "estimated_sensor_names": [],
+        "mean_acc_corr_before": None,
+        "mean_acc_corr_after": None,
+        "mean_gyro_corr_before": None,
+        "mean_gyro_corr_after": None,
+        "notes": list(notes),
+    }
+    return {
+        "status": "warning",
+        "enabled": False,
+        "aligned_virtual_imu_sequence": aligned_virtual_imu_sequence,
+        "transforms": {},
+        "metrics_before": {},
+        "metrics_after": {},
+        "quality_report": quality_report,
+        "artifacts": {
+            "virtual_imu_geometric_aligned_npz_path": None,
+            "imu_alignment_transforms_json_path": None,
+            "imu_alignment_metrics_json_path": None,
+            "imu_alignment_quality_report_json_path": None,
+            "imu_alignment_config_path": None,
         },
     }
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 import numpy as np
 
@@ -36,6 +36,10 @@ def run_geometric_alignment(
     output_dir: str | Path,
     real_imu_npz_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    *,
+    subject_id: str | None = None,
+    capture_id: str | None = None,
+    transforms: Mapping[Tuple[str, str], Any] | None = None,
 ) -> Dict[str, Any]:
     """Apply optional geometric alignment between virtual and real IMU."""
 
@@ -51,61 +55,66 @@ def run_geometric_alignment(
         return disabled_result
 
     resolved_real_path = None if real_imu_npz_path in (None, "") else Path(real_imu_npz_path)
-    subject_id = _infer_subject_id(resolved_real_path, clip_id=str(virtual_imu_sequence.clip_id))
-    capture_id = str(virtual_imu_sequence.clip_id)
+    resolved_subject_id = (
+        _infer_subject_id(resolved_real_path, clip_id=str(virtual_imu_sequence.clip_id))
+        if subject_id in (None, "")
+        else str(subject_id)
+    )
+    resolved_capture_id = str(virtual_imu_sequence.clip_id) if capture_id in (None, "") else str(capture_id)
     alignment_config = build_alignment_config(settings)
     virtual_sequence = sequence_from_virtual_imu(
         virtual_imu_sequence,
-        subject_id=subject_id,
-        capture_id=capture_id,
+        subject_id=resolved_subject_id,
+        capture_id=resolved_capture_id,
     )
 
-    transforms: Dict[Tuple[str, str], Any] = {}
-    notes: list[str] = []
+    active_transforms: Dict[Tuple[str, str], Any] = {}
     transform_source = "identity"
-    transform_path = _resolve_transform_path(settings, output_dir_path)
-    if transform_path is not None and transform_path.exists():
-        transforms = load_transforms_json(transform_path)
+    transform_path = None if transforms is not None else _resolve_transform_path(settings, output_dir_path)
+    if transforms is not None:
+        active_transforms = {key: value for key, value in transforms.items()}
+        transform_source = "provided"
+    elif transform_path is not None and transform_path.exists():
+        active_transforms = load_transforms_json(transform_path)
         transform_source = "loaded"
     elif resolved_real_path is not None and bool(settings.get("fit_from_current_pair", True)):
         real_sequence = load_real_imu_sequence(
             resolved_real_path,
-            subject_id=subject_id,
-            capture_id=capture_id,
+            subject_id=resolved_subject_id,
+            capture_id=resolved_capture_id,
         )
         if bool(settings.get("enable_rotation_alignment", True)):
-            transforms = fit_sensor_subject_transforms([real_sequence], [virtual_sequence], alignment_config)
+            active_transforms = fit_sensor_subject_transforms([real_sequence], [virtual_sequence], alignment_config)
             transform_source = "fitted_on_current_pair"
         else:
-            transforms = {
-                (subject_id, sensor_name): build_identity_transform(
-                    subject_id=subject_id,
+            active_transforms = {
+                (resolved_subject_id, sensor_name): build_identity_transform(
+                    subject_id=resolved_subject_id,
                     sensor_name=sensor_name,
-                    fitted_capture_ids=[capture_id],
+                    fitted_capture_ids=[resolved_capture_id],
                     diagnostics={"notes": ["rotation_alignment_disabled_identity_transform"]},
                 )
                 for sensor_name in virtual_sequence.sensor_names
             }
             transform_source = "identity_rotation_disabled"
-            notes.append("rotation_alignment_disabled")
         if transform_path is not None and bool(settings.get("save_transforms", True)):
-            save_transforms_json(transforms, transform_path)
-    else:
-        notes.append("no_real_reference_or_persisted_transforms_available")
+            save_transforms_json(active_transforms, transform_path)
 
-    if len(transforms) == 0:
-        warning_result = _build_warning_result(
+    if len(active_transforms) == 0:
+        skip_reason = "no_real_reference_or_persisted_transforms_available"
+        if resolved_real_path is not None and not bool(settings.get("fit_from_current_pair", True)):
+            skip_reason = "fit_from_current_pair_disabled_and_no_persisted_transforms_available"
+        skipped_result = _build_skipped_result(
             virtual_imu_sequence=virtual_imu_sequence,
             settings=settings,
-            subject_id=subject_id,
-            capture_id=capture_id,
+            subject_id=resolved_subject_id,
+            capture_id=resolved_capture_id,
             real_imu_npz_path=resolved_real_path,
-            notes=notes,
+            skip_reason=skip_reason,
         )
-        _write_result_artifacts(warning_result, output_dir_path, save_metrics=bool(settings.get("save_metrics", True)))
-        return warning_result
+        return skipped_result
 
-    aligned_sequence = apply_transforms_to_imu_sequence(virtual_sequence, transforms)
+    aligned_sequence = apply_transforms_to_imu_sequence(virtual_sequence, active_transforms)
     aligned_virtual_sequence = virtual_from_imu_sequence(
         aligned_sequence,
         clip_id=str(virtual_imu_sequence.clip_id),
@@ -118,10 +127,15 @@ def run_geometric_alignment(
     if resolved_real_path is not None:
         real_sequence = load_real_imu_sequence(
             resolved_real_path,
-            subject_id=subject_id,
-            capture_id=capture_id,
+            subject_id=resolved_subject_id,
+            capture_id=resolved_capture_id,
         )
-        sensor_results = apply_sensor_subject_transform(real_sequence, virtual_sequence, transforms, alignment_config)
+        sensor_results = apply_sensor_subject_transform(
+            real_sequence,
+            virtual_sequence,
+            active_transforms,
+            alignment_config,
+        )
         aggregated = aggregate_alignment_results(sensor_results)
         metrics_before = {
             "num_results": int(aggregated["num_results"]),
@@ -153,28 +167,25 @@ def run_geometric_alignment(
             "mean_acc_corr": aggregated["mean_acc_corr_after"],
             "mean_gyro_corr": aggregated["mean_gyro_corr_after"],
         }
-    else:
-        notes.append("real_imu_metrics_skipped_missing_reference")
-
     quality_report = {
         "enabled": True,
-        "status": "ok" if len(notes) == 0 else "warning",
-        "subject_id": subject_id,
-        "capture_id": capture_id,
+        "status": "ok",
+        "subject_id": resolved_subject_id,
+        "capture_id": resolved_capture_id,
         "transform_source": transform_source,
         "real_imu_npz_path": None if resolved_real_path is None else str(resolved_real_path.resolve()),
-        "estimated_sensor_names": sorted({key[1] for key in transforms.keys()}),
+        "estimated_sensor_names": sorted({key[1] for key in active_transforms.keys()}),
         "mean_acc_corr_before": metrics_before.get("mean_acc_corr"),
         "mean_acc_corr_after": metrics_after.get("mean_acc_corr"),
         "mean_gyro_corr_before": metrics_before.get("mean_gyro_corr"),
         "mean_gyro_corr_after": metrics_after.get("mean_gyro_corr"),
-        "notes": list(dict.fromkeys(notes)),
+        "notes": [],
     }
     result = {
         "status": quality_report["status"],
         "enabled": True,
         "aligned_virtual_imu_sequence": aligned_virtual_sequence,
-        "transforms": transforms,
+        "transforms": active_transforms,
         "metrics_before": metrics_before,
         "metrics_after": metrics_after,
         "quality_report": quality_report,
@@ -240,14 +251,14 @@ def _build_disabled_result(
     }
 
 
-def _build_warning_result(
+def _build_skipped_result(
     *,
     virtual_imu_sequence: VirtualIMUSequence,
     settings: Dict[str, Any],
     subject_id: str,
     capture_id: str,
     real_imu_npz_path: Path | None,
-    notes: list[str],
+    skip_reason: str,
 ) -> Dict[str, Any]:
     aligned_virtual_sequence = VirtualIMUSequence(
         clip_id=str(virtual_imu_sequence.clip_id),
@@ -259,15 +270,15 @@ def _build_warning_result(
         source=str(virtual_imu_sequence.source),
     )
     return {
-        "status": "warning",
-        "enabled": True,
+        "status": "skipped",
+        "enabled": False,
         "aligned_virtual_imu_sequence": aligned_virtual_sequence,
         "transforms": {},
         "metrics_before": {},
         "metrics_after": {},
         "quality_report": {
-            "enabled": True,
-            "status": "warning",
+            "enabled": False,
+            "status": None,
             "subject_id": str(subject_id),
             "capture_id": str(capture_id),
             "transform_source": None,
@@ -277,25 +288,14 @@ def _build_warning_result(
             "mean_acc_corr_after": None,
             "mean_gyro_corr_before": None,
             "mean_gyro_corr_after": None,
-            "notes": list(dict.fromkeys(notes)),
+            "skip_reason": str(skip_reason),
+            "notes": [],
         },
         "artifacts": {
-            "virtual_imu_geometric_aligned_npz_path": str(
-                (Path(settings.get("output_dir", ".")) / DEFAULT_GEOMETRIC_ALIGNED_IMU_FILENAME).resolve()
-            )
-            if settings.get("output_dir")
-            else None,
+            "virtual_imu_geometric_aligned_npz_path": None,
             "imu_alignment_transforms_json_path": None,
-            "imu_alignment_metrics_json_path": str(
-                (Path(settings.get("output_dir", ".")) / DEFAULT_GEOMETRIC_ALIGNMENT_METRICS_FILENAME).resolve()
-            )
-            if settings.get("output_dir")
-            else None,
-            "imu_alignment_quality_report_json_path": str(
-                (Path(settings.get("output_dir", ".")) / DEFAULT_GEOMETRIC_ALIGNMENT_REPORT_FILENAME).resolve()
-            )
-            if settings.get("output_dir")
-            else None,
+            "imu_alignment_metrics_json_path": None,
+            "imu_alignment_quality_report_json_path": None,
             "imu_alignment_config_path": settings.get("config_path"),
         },
     }
@@ -316,6 +316,8 @@ def _infer_subject_id(real_imu_npz_path: Path | None, *, clip_id: str) -> str:
     metadata_path = real_imu_npz_path.with_name("metadata.json")
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if isinstance(metadata.get("domain"), str) and isinstance(metadata.get("user_id"), int):
+            return f"{str(metadata['domain'])}_user_{int(metadata['user_id']):02d}"
         if isinstance(metadata.get("user_id"), int):
             return f"user_{int(metadata['user_id']):02d}"
     return str(clip_id)

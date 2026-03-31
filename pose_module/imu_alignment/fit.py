@@ -11,7 +11,7 @@ import numpy as np
 from .interfaces import AlignmentConfig, IMUSequence, SensorSubjectTransform
 from .metrics import summarize_alignment_metrics
 from .rotation import apply_rotation, estimate_rotation_procrustes
-from .temporal import align_streams_with_lag, estimate_time_lag
+from .temporal import align_streams_with_lag, estimate_time_lag, prepare_sequences_for_alignment
 
 _MIN_REQUIRED_SAMPLES = 3
 _LOW_SAMPLE_WARNING = 25
@@ -70,28 +70,32 @@ def _fit_single_sensor_subject_transform(
     total_gyro_samples = 0
 
     for real_sequence, virtual_sequence in paired_sequences:
-        real_index = _sensor_index(real_sequence.sensor_names, sensor_name)
-        virtual_index = _sensor_index(virtual_sequence.sensor_names, sensor_name)
+        aligned_real_sequence, aligned_virtual_sequence, timebase_summary = prepare_sequences_for_alignment(
+            real_sequence,
+            virtual_sequence,
+        )
+        real_index = _sensor_index(aligned_real_sequence.sensor_names, sensor_name)
+        virtual_index = _sensor_index(aligned_virtual_sequence.sensor_names, sensor_name)
         if real_index is None or virtual_index is None:
             raise AlignmentFittingError(
                 f"Sensor '{sensor_name}' is missing in capture '{real_sequence.capture_id}' for subject '{subject_id}'."
             )
 
         lag_samples = _estimate_capture_lag(
-            real_acc=np.asarray(real_sequence.acc[:, real_index, :], dtype=np.float32),
-            virt_acc=np.asarray(virtual_sequence.acc[:, virtual_index, :], dtype=np.float32),
-            real_gyro=np.asarray(real_sequence.gyro[:, real_index, :], dtype=np.float32),
-            virt_gyro=np.asarray(virtual_sequence.gyro[:, virtual_index, :], dtype=np.float32),
+            real_acc=np.asarray(aligned_real_sequence.acc[:, real_index, :], dtype=np.float32),
+            virt_acc=np.asarray(aligned_virtual_sequence.acc[:, virtual_index, :], dtype=np.float32),
+            real_gyro=np.asarray(aligned_real_sequence.gyro[:, real_index, :], dtype=np.float32),
+            virt_gyro=np.asarray(aligned_virtual_sequence.gyro[:, virtual_index, :], dtype=np.float32),
             config=config,
         )
         aligned_real_acc, aligned_virt_acc = align_streams_with_lag(
-            np.asarray(real_sequence.acc[:, real_index, :], dtype=np.float32),
-            np.asarray(virtual_sequence.acc[:, virtual_index, :], dtype=np.float32),
+            np.asarray(aligned_real_sequence.acc[:, real_index, :], dtype=np.float32),
+            np.asarray(aligned_virtual_sequence.acc[:, virtual_index, :], dtype=np.float32),
             lag_samples,
         )
         aligned_real_gyro, aligned_virt_gyro = align_streams_with_lag(
-            np.asarray(real_sequence.gyro[:, real_index, :], dtype=np.float32),
-            np.asarray(virtual_sequence.gyro[:, virtual_index, :], dtype=np.float32),
+            np.asarray(aligned_real_sequence.gyro[:, real_index, :], dtype=np.float32),
+            np.asarray(aligned_virtual_sequence.gyro[:, virtual_index, :], dtype=np.float32),
             lag_samples,
         )
 
@@ -138,6 +142,7 @@ def _fit_single_sensor_subject_transform(
                 "num_gyro_samples": int(np.count_nonzero(gyro_mask)),
                 "num_acc_valid_frames": int(np.count_nonzero(residual_acc_mask)),
                 "num_gyro_valid_frames": int(np.count_nonzero(residual_gyro_mask)),
+                "timebase_summary": dict(timebase_summary),
             }
         )
         fitted_capture_ids.append(str(real_sequence.capture_id))

@@ -10,7 +10,7 @@ from .fit import AlignmentFittingError
 from .interfaces import AlignmentConfig, AlignmentResult, IMUSequence, SensorSubjectTransform
 from .metrics import summarize_alignment_metrics
 from .rotation import apply_rotation
-from .temporal import align_streams_with_lag, estimate_time_lag
+from .temporal import align_streams_with_lag, estimate_time_lag, prepare_sequences_for_alignment
 
 
 def apply_sensor_subject_transform(
@@ -29,21 +29,30 @@ def apply_sensor_subject_transform(
     if set(real_seq.sensor_names) != set(virt_seq.sensor_names):
         raise AlignmentFittingError("real_seq and virt_seq must expose the same sensor names.")
 
+    aligned_real_seq, aligned_virt_seq, timebase_summary = prepare_sequences_for_alignment(real_seq, virt_seq)
     results: list[AlignmentResult] = []
-    for sensor_name in real_seq.sensor_names:
-        transform_key = (str(real_seq.subject_id), str(sensor_name))
+    for sensor_name in aligned_real_seq.sensor_names:
+        transform_key = (str(aligned_real_seq.subject_id), str(sensor_name))
         if transform_key not in transforms:
-            raise AlignmentFittingError(f"Missing transform for subject '{real_seq.subject_id}' sensor '{sensor_name}'.")
+            raise AlignmentFittingError(
+                f"Missing transform for subject '{aligned_real_seq.subject_id}' sensor '{sensor_name}'."
+            )
         transform = transforms[transform_key]
-        real_index = _sensor_index(real_seq.sensor_names, sensor_name)
-        virt_index = _sensor_index(virt_seq.sensor_names, sensor_name)
+        real_index = _sensor_index(aligned_real_seq.sensor_names, sensor_name)
+        virt_index = _sensor_index(aligned_virt_seq.sensor_names, sensor_name)
         assert real_index is not None and virt_index is not None
 
-        real_acc = np.asarray(real_seq.acc[:, real_index, :], dtype=np.float32)
-        real_gyro = np.asarray(real_seq.gyro[:, real_index, :], dtype=np.float32)
-        virt_acc = np.asarray(virt_seq.acc[:, virt_index, :], dtype=np.float32)
-        virt_gyro = np.asarray(virt_seq.gyro[:, virt_index, :], dtype=np.float32)
-        lag_samples = _estimate_capture_lag(real_acc=real_acc, virt_acc=virt_acc, real_gyro=real_gyro, virt_gyro=virt_gyro, config=config)
+        real_acc = np.asarray(aligned_real_seq.acc[:, real_index, :], dtype=np.float32)
+        real_gyro = np.asarray(aligned_real_seq.gyro[:, real_index, :], dtype=np.float32)
+        virt_acc = np.asarray(aligned_virt_seq.acc[:, virt_index, :], dtype=np.float32)
+        virt_gyro = np.asarray(aligned_virt_seq.gyro[:, virt_index, :], dtype=np.float32)
+        lag_samples = _estimate_capture_lag(
+            real_acc=real_acc,
+            virt_acc=virt_acc,
+            real_gyro=real_gyro,
+            virt_gyro=virt_gyro,
+            config=config,
+        )
 
         aligned_real_acc, aligned_virt_acc = align_streams_with_lag(real_acc, virt_acc, lag_samples)
         aligned_real_gyro, aligned_virt_gyro = align_streams_with_lag(real_gyro, virt_gyro, lag_samples)
@@ -53,6 +62,7 @@ def apply_sensor_subject_transform(
             real_gyro=aligned_real_gyro,
             estimate_gyro=aligned_virt_gyro,
         )
+        metrics_before["timebase_summary"] = dict(timebase_summary)
 
         aligned_acc = _apply_transform_to_values(
             aligned_virt_acc,
@@ -72,10 +82,11 @@ def apply_sensor_subject_transform(
             real_gyro=aligned_real_gyro,
             estimate_gyro=aligned_gyro,
         )
+        metrics_after["timebase_summary"] = dict(timebase_summary)
         results.append(
             AlignmentResult(
-                subject_id=str(real_seq.subject_id),
-                capture_id=str(real_seq.capture_id),
+                subject_id=str(aligned_real_seq.subject_id),
+                capture_id=str(aligned_real_seq.capture_id),
                 sensor_name=str(sensor_name),
                 lag_samples=int(lag_samples),
                 acc_aligned=aligned_acc,

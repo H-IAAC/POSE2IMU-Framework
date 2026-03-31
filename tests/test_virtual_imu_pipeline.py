@@ -219,3 +219,41 @@ class VirtualIMUPipelineTests(unittest.TestCase):
                 result["artifacts"]["virtual_imu_frame_aligned_npz_path"],
                 str(aligned_path.resolve()),
             )
+
+    def test_run_virtual_imu_pipeline_survives_geometric_alignment_failure(self) -> None:
+        pose_sequence = _make_pose3d_sequence()
+        pose3d_result = {
+            "clip_id": "clip_virtual_pipeline",
+            "pose_sequence": pose_sequence,
+            "quality_report": {"clip_id": "clip_virtual_pipeline", "status": "ok", "notes": []},
+            "artifacts": {
+                "pose3d_npz_path": "/tmp/fake_pose3d.npz",
+                "quality_report_json_path": "/tmp/fake_pose3d_quality.json",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("pose_module.pipeline.run_pose3d_pipeline", return_value=pose3d_result):
+                with patch(
+                    "pose_module.pipeline.load_alignment_runtime_settings",
+                    return_value={"enable": True},
+                ):
+                    with patch(
+                        "pose_module.pipeline.run_geometric_alignment",
+                        side_effect=RuntimeError("synthetic_alignment_failure"),
+                    ):
+                        result = run_virtual_imu_pipeline(
+                            clip_id="clip_virtual_pipeline",
+                            video_path=str(Path(tmp_dir) / "video.mp4"),
+                            output_dir=tmp_dir,
+                            save_debug=False,
+                        )
+
+            self.assertEqual(result["quality_report"]["status"], "warning")
+            self.assertEqual(result["geometric_alignment_quality_report"]["status"], "warning")
+            self.assertIn(
+                "geometric_alignment_failed:synthetic_alignment_failure",
+                result["geometric_alignment_quality_report"]["notes"],
+            )
+            self.assertTrue(Path(result["artifacts"]["virtual_imu_npz_path"]).exists())
+            self.assertEqual(result["virtual_imu_sequence"].acc.shape[:2], (8, 4))

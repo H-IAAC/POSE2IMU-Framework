@@ -66,26 +66,37 @@ def _make_pair(
     num_frames: int = 240,
     fps: float = 20.0,
     capture_offset: float = 0.0,
+    real_timestamps: np.ndarray | None = None,
 ) -> tuple[IMUSequence, IMUSequence]:
-    timestamps = np.arange(num_frames, dtype=np.float32) / np.float32(fps)
+    virtual_timestamps = np.arange(num_frames, dtype=np.float32) / np.float32(fps)
+    resolved_real_timestamps = (
+        np.asarray(real_timestamps, dtype=np.float32)
+        if real_timestamps is not None
+        else np.asarray(virtual_timestamps, dtype=np.float32)
+    )
     virtual_acc = np.zeros((num_frames, len(sensor_names), 3), dtype=np.float32)
     virtual_gyro = np.zeros_like(virtual_acc)
-    real_acc = np.zeros_like(virtual_acc)
-    real_gyro = np.zeros_like(virtual_acc)
+    real_acc = np.zeros((resolved_real_timestamps.shape[0], len(sensor_names), 3), dtype=np.float32)
+    real_gyro = np.zeros_like(real_acc)
     for sensor_index, sensor_name in enumerate(sensor_names):
         acc, gyro = _sensor_waveforms(
-            timestamps,
+            virtual_timestamps,
+            sensor_offset=0.4 * (sensor_index + 1),
+            capture_offset=float(capture_offset),
+        )
+        real_acc_waveform, real_gyro_waveform = _sensor_waveforms(
+            resolved_real_timestamps,
             sensor_offset=0.4 * (sensor_index + 1),
             capture_offset=float(capture_offset),
         )
         virtual_acc[:, sensor_index, :] = acc
         virtual_gyro[:, sensor_index, :] = gyro
         real_acc[:, sensor_index, :] = _shift_signal(
-            _apply_rotation(acc, rotations[sensor_name]),
+            _apply_rotation(real_acc_waveform, rotations[sensor_name]),
             lags[sensor_name],
         )
         real_gyro[:, sensor_index, :] = _shift_signal(
-            _apply_rotation(gyro, rotations[sensor_name]),
+            _apply_rotation(real_gyro_waveform, rotations[sensor_name]),
             lags[sensor_name],
         )
 
@@ -94,7 +105,7 @@ def _make_pair(
         capture_id=capture_id,
         sensor_names=list(sensor_names),
         fps=fps,
-        timestamps=timestamps,
+        timestamps=resolved_real_timestamps,
         acc=real_acc,
         gyro=real_gyro,
     )
@@ -103,11 +114,15 @@ def _make_pair(
         capture_id=capture_id,
         sensor_names=list(sensor_names),
         fps=fps,
-        timestamps=timestamps,
+        timestamps=virtual_timestamps,
         acc=virtual_acc,
         gyro=virtual_gyro,
     )
     return real_sequence, virtual_sequence
+
+
+def _write_alignment_config(path: Path, *, enable: bool) -> None:
+    path.write_text(f"enable: {'true' if enable else 'false'}\n", encoding="utf-8")
 
 
 class IMUAlignmentTests(unittest.TestCase):
@@ -230,6 +245,55 @@ class IMUAlignmentTests(unittest.TestCase):
             self.assertLess(after_gyro_rmse, before_gyro_rmse)
             self.assertGreater(after_acc_corr, before_acc_corr)
 
+    def test_alignment_resamples_real_sequence_when_frequencies_differ(self) -> None:
+        sensor_names = ["left_forearm"]
+        rotation_matrix = Rotation.from_euler("xyz", [17.0, -8.0, 21.0], degrees=True).as_matrix().astype(np.float32)
+        real_timestamps = np.arange(0.0, 12.0, 0.01, dtype=np.float32)
+        train_real, train_virtual = _make_pair(
+            subject_id="user_04",
+            capture_id="capture_train",
+            sensor_names=sensor_names,
+            rotations={"left_forearm": rotation_matrix},
+            lags={"left_forearm": 15},
+            capture_offset=0.3,
+            real_timestamps=real_timestamps,
+        )
+        test_real, test_virtual = _make_pair(
+            subject_id="user_04",
+            capture_id="capture_test",
+            sensor_names=sensor_names,
+            rotations={"left_forearm": rotation_matrix},
+            lags={"left_forearm": -10},
+            capture_offset=0.9,
+            real_timestamps=real_timestamps,
+        )
+
+        transforms = fit_sensor_subject_transforms([train_real], [train_virtual], AlignmentConfig())
+        estimated_rotation = transforms[("user_04", "left_forearm")].rotation
+        delta = Rotation.from_matrix(estimated_rotation) * Rotation.from_matrix(rotation_matrix).inv()
+
+        result = apply_sensor_subject_transform(test_real, test_virtual, transforms, AlignmentConfig())[0]
+
+        self.assertLess(np.degrees(delta.magnitude()), 4.0)
+        self.assertTrue(result.metrics_before["timebase_summary"]["resampled"])
+        self.assertEqual(result.metrics_before["timebase_summary"]["real_original_frames"], 1200)
+        self.assertEqual(result.metrics_before["timebase_summary"]["virtual_frames"], 240)
+        before_gyro_corr = np.mean(
+            [
+                value
+                for value in result.metrics_before["modalities"]["gyro"]["corr_per_axis"].values()
+                if value is not None
+            ]
+        )
+        after_gyro_corr = np.mean(
+            [
+                value
+                for value in result.metrics_after["modalities"]["gyro"]["corr_per_axis"].values()
+                if value is not None
+            ]
+        )
+        self.assertGreater(after_gyro_corr, before_gyro_corr)
+
     def test_fit_sensor_subject_transforms_fails_on_missing_pairs_or_sensors(self) -> None:
         real_sequence, virtual_sequence = _make_pair(
             subject_id="user_03",
@@ -280,12 +344,46 @@ class IMUAlignmentTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            result = run_geometric_alignment(virtual_sequence, output_dir=tmp_dir)
+            config_path = Path(tmp_dir) / "imu_alignment_disabled.yaml"
+            _write_alignment_config(config_path, enable=False)
+            result = run_geometric_alignment(virtual_sequence, output_dir=tmp_dir, config_path=config_path)
 
             self.assertEqual(result["status"], "not_enabled")
             np.testing.assert_allclose(
                 result["aligned_virtual_imu_sequence"].acc,
                 virtual_sequence.acc,
+                atol=1e-6,
+            )
+            self.assertIsNone(result["artifacts"]["virtual_imu_geometric_aligned_npz_path"])
+
+    def test_run_geometric_alignment_skips_cleanly_without_reference_or_transforms(self) -> None:
+        timestamps = np.arange(32, dtype=np.float32) / np.float32(20.0)
+        acc, gyro = _sensor_waveforms(timestamps, sensor_offset=0.4, capture_offset=0.2)
+        virtual_sequence = VirtualIMUSequence(
+            clip_id="clip_alignment_skipped",
+            fps=20.0,
+            sensor_names=["left_forearm"],
+            acc=acc[:, None, :],
+            gyro=gyro[:, None, :],
+            timestamps_sec=timestamps,
+            source="unit_test_virtual",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "imu_alignment_enabled.yaml"
+            _write_alignment_config(config_path, enable=True)
+            result = run_geometric_alignment(virtual_sequence, output_dir=tmp_dir, config_path=config_path)
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertFalse(result["enabled"])
+            self.assertIsNone(result["quality_report"]["status"])
+            self.assertEqual(
+                result["quality_report"]["skip_reason"],
+                "no_real_reference_or_persisted_transforms_available",
+            )
+            np.testing.assert_allclose(
+                result["aligned_virtual_imu_sequence"].gyro,
+                virtual_sequence.gyro,
                 atol=1e-6,
             )
             self.assertIsNone(result["artifacts"]["virtual_imu_geometric_aligned_npz_path"])
