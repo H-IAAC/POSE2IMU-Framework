@@ -15,6 +15,7 @@ from pose_module.export.debug_video import (
     render_pose3d_side_by_side_video,
     resolve_debug_overlay_variant_path,
 )
+from pose_module.imu_alignment import load_alignment_runtime_settings, run_geometric_alignment
 from pose_module.interfaces import Pose2DJob, PoseSequence2D, VirtualIMUSequence
 from pose_module.io.cache import write_json_file
 from pose_module.motionbert.adapter import write_pose_sequence3d_npz
@@ -23,6 +24,7 @@ from pose_module.io.video_loader import frame_indices_to_timestamps, select_fram
 from pose_module.processing.cleaner2d import clean_pose_sequence2d
 from pose_module.processing.lower_limb_stabilizer import run_lower_limb_stabilizer
 from pose_module.processing.metric_normalizer import run_metric_normalizer
+from pose_module.processing.imu_calibration import calibrate_virtual_imu_sequence
 from pose_module.processing.quality import (
     merge_stage53_quality_reports,
     merge_stage58_quality_reports,
@@ -464,13 +466,48 @@ def run_virtual_imu_pipeline(
         real_imu_percentile_resolution=int(real_imu_percentile_resolution),
         real_imu_per_class_calibration=bool(real_imu_per_class_calibration),
     )
+    geometric_alignment_settings = load_alignment_runtime_settings(None)
+    if bool(geometric_alignment_settings.get("enable", False)):
+        geometric_alignment_result = run_geometric_alignment(
+            virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+            output_dir=output_dir,
+            real_imu_npz_path=_resolve_real_imu_npz_path(output_dir=output_dir),
+        )
+    else:
+        geometric_alignment_result = _build_disabled_geometric_alignment_result(
+            raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+            config_path=geometric_alignment_settings.get("config_path"),
+        )
+    final_virtual_imu_sequence = imusim_result["virtual_imu_sequence"]
+    final_virtual_imu_calibration_report = imusim_result["calibration_report"]
+    geometric_alignment_enabled = bool(geometric_alignment_result.get("enabled"))
+    if geometric_alignment_enabled:
+        geometrically_aligned_sequence = geometric_alignment_result["aligned_virtual_imu_sequence"]
+        if real_imu_reference_path not in (None, ""):
+            calibration_result = calibrate_virtual_imu_sequence(
+                geometrically_aligned_sequence,
+                real_imu_reference_path=str(real_imu_reference_path),
+                activity_label=activity_label,
+                signal_mode=str(real_imu_signal_mode),
+                percentile_resolution=int(real_imu_percentile_resolution),
+                per_class=bool(real_imu_per_class_calibration),
+            )
+            final_virtual_imu_sequence = calibration_result["virtual_imu_sequence"]
+            final_virtual_imu_calibration_report = dict(calibration_result["calibration_report"])
+        else:
+            final_virtual_imu_sequence = geometrically_aligned_sequence
+
+        final_virtual_imu_path = output_dir / "virtual_imu.npz"
+        np.savez_compressed(final_virtual_imu_path, **final_virtual_imu_sequence.to_npz_payload())
+        imusim_result["artifacts"]["virtual_imu_npz_path"] = str(final_virtual_imu_path.resolve())
+
     frame_alignment_result = _build_disabled_sensor_frame_estimation_result(
-        raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+        raw_virtual_imu_sequence=final_virtual_imu_sequence,
         target_sensor_names=DEFAULT_TARGET_SENSOR_NAMES if estimate_sensor_names is None else estimate_sensor_names,
     )
     if bool(estimate_sensor_frame):
         frame_alignment_result = _run_optional_sensor_frame_estimation(
-            raw_virtual_imu_sequence=imusim_result["raw_virtual_imu_sequence"],
+            raw_virtual_imu_sequence=final_virtual_imu_sequence,
             target_sensor_names=DEFAULT_TARGET_SENSOR_NAMES
             if estimate_sensor_names is None
             else estimate_sensor_names,
@@ -481,6 +518,7 @@ def run_virtual_imu_pipeline(
         pose3d_quality=pose3d_result["quality_report"],
         ik_quality=ik_result["quality_report"],
         virtual_imu_quality=imusim_result["quality_report"],
+        geometric_alignment_quality=geometric_alignment_result["quality_report"],
         frame_alignment_quality=frame_alignment_result["quality_report"],
     )
     write_json_file(merged_quality, output_dir / "quality_report.json")
@@ -488,6 +526,7 @@ def run_virtual_imu_pipeline(
     artifacts = dict(pose3d_result["artifacts"])
     artifacts.update(ik_result["artifacts"])
     artifacts.update(imusim_result["artifacts"])
+    artifacts.update(geometric_alignment_result["artifacts"])
     artifacts.update(frame_alignment_result["artifacts"])
     artifacts["quality_report_json_path"] = str((output_dir / "quality_report.json").resolve())
 
@@ -495,13 +534,16 @@ def run_virtual_imu_pipeline(
         "clip_id": str(clip_id),
         "pose3d_result": pose3d_result,
         "pose_sequence": pose3d_result["pose_sequence"],
-        "virtual_imu_sequence": imusim_result["virtual_imu_sequence"],
+        "virtual_imu_sequence": final_virtual_imu_sequence,
         "ik_sequence": ik_result["ik_sequence"],
         "quality_report": merged_quality,
         "pose3d_quality_report": pose3d_result["quality_report"],
         "ik_quality_report": ik_result["quality_report"],
         "virtual_imu_quality_report": imusim_result["quality_report"],
-        "virtual_imu_calibration_report": imusim_result["calibration_report"],
+        "virtual_imu_calibration_report": final_virtual_imu_calibration_report,
+        "geometric_alignment_quality_report": geometric_alignment_result["quality_report"],
+        "geometric_alignment_result": geometric_alignment_result,
+        "geometrically_aligned_virtual_imu_sequence": geometric_alignment_result["aligned_virtual_imu_sequence"],
         "aligned_virtual_imu_sequence": frame_alignment_result["aligned_virtual_imu_sequence"],
         "sensor_frame_estimation_report": frame_alignment_result["frame_estimation_report"],
         "sensor_frame_estimation_lag_report": frame_alignment_result["lag_report"],
@@ -667,6 +709,50 @@ def _build_disabled_sensor_frame_estimation_result(
             "virtual_imu_frame_aligned_npz_path": None,
             "sensor_frame_estimation_report_json_path": None,
             "frame_alignment_quality_report_json_path": None,
+        },
+    }
+
+
+def _build_disabled_geometric_alignment_result(
+    *,
+    raw_virtual_imu_sequence: VirtualIMUSequence,
+    config_path: str | None,
+) -> Dict[str, Any]:
+    return {
+        "status": "not_enabled",
+        "enabled": False,
+        "aligned_virtual_imu_sequence": VirtualIMUSequence(
+            clip_id=str(raw_virtual_imu_sequence.clip_id),
+            fps=None if raw_virtual_imu_sequence.fps is None else float(raw_virtual_imu_sequence.fps),
+            sensor_names=list(raw_virtual_imu_sequence.sensor_names),
+            acc=np.asarray(raw_virtual_imu_sequence.acc, dtype=np.float32),
+            gyro=np.asarray(raw_virtual_imu_sequence.gyro, dtype=np.float32),
+            timestamps_sec=np.asarray(raw_virtual_imu_sequence.timestamps_sec, dtype=np.float32),
+            source=str(raw_virtual_imu_sequence.source),
+        ),
+        "transforms": {},
+        "metrics_before": {},
+        "metrics_after": {},
+        "quality_report": {
+            "enabled": False,
+            "status": None,
+            "subject_id": None,
+            "capture_id": str(raw_virtual_imu_sequence.clip_id),
+            "transform_source": None,
+            "real_imu_npz_path": None,
+            "estimated_sensor_names": [],
+            "mean_acc_corr_before": None,
+            "mean_acc_corr_after": None,
+            "mean_gyro_corr_before": None,
+            "mean_gyro_corr_after": None,
+            "notes": [],
+        },
+        "artifacts": {
+            "virtual_imu_geometric_aligned_npz_path": None,
+            "imu_alignment_transforms_json_path": None,
+            "imu_alignment_metrics_json_path": None,
+            "imu_alignment_quality_report_json_path": None,
+            "imu_alignment_config_path": config_path,
         },
     }
 

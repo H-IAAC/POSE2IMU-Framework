@@ -1,0 +1,28 @@
+# Configuracao do modulo de alinhamento geometrico IMU.
+# Mantido desligado por padrao para nao alterar pipelines existentes.
+
+enable: false
+
+enable_time_lag_estimation: true
+enable_rotation_alignment: true
+enable_bias_scale_refinement: false
+
+estimate_time_lag: true
+max_lag_samples: 20
+lag_signal: "gyro_norm"
+
+use_acc: true
+use_gyro: true
+use_bias: false
+use_scale: false
+
+gravity_window_only: false
+min_motion_norm_gyro: 0.1
+min_motion_norm_acc: 0.2
+ridge_lambda: 1.0e-6
+
+output_dir: "./output/imu_alignment"
+save_transforms: true
+save_metrics: true
+fit_from_current_pair: true
+transforms_path: null

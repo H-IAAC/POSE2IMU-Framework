@@ -329,17 +329,22 @@ def merge_stage510_quality_reports(
     pose3d_quality: Mapping[str, Any],
     ik_quality: Mapping[str, Any],
     virtual_imu_quality: Mapping[str, Any],
+    geometric_alignment_quality: Mapping[str, Any] | None = None,
     frame_alignment_quality: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     pose3d_quality = dict(pose3d_quality)
     ik_quality = dict(ik_quality)
     virtual_imu_quality = dict(virtual_imu_quality)
+    geometric_alignment_quality = (
+        {} if geometric_alignment_quality is None else dict(geometric_alignment_quality)
+    )
     frame_alignment_quality = {} if frame_alignment_quality is None else dict(frame_alignment_quality)
 
     notes = []
     notes.extend([str(value) for value in pose3d_quality.get("notes", [])])
     notes.extend([str(value) for value in ik_quality.get("notes", [])])
     notes.extend([str(value) for value in virtual_imu_quality.get("notes", [])])
+    notes.extend([str(value) for value in geometric_alignment_quality.get("notes", [])])
     notes.extend([str(value) for value in frame_alignment_quality.get("notes", [])])
 
     status = "ok"
@@ -347,6 +352,7 @@ def merge_stage510_quality_reports(
         pose3d_quality.get("status") == "fail"
         or ik_quality.get("status") == "fail"
         or virtual_imu_quality.get("status") == "fail"
+        or geometric_alignment_quality.get("status") == "fail"
         or frame_alignment_quality.get("status") == "fail"
     ):
         status = "fail"
@@ -354,6 +360,7 @@ def merge_stage510_quality_reports(
         pose3d_quality.get("status") == "warning"
         or ik_quality.get("status") == "warning"
         or virtual_imu_quality.get("status") == "warning"
+        or geometric_alignment_quality.get("status") == "warning"
         or frame_alignment_quality.get("status") == "warning"
         or len(notes) > 0
     ):
@@ -390,6 +397,25 @@ def merge_stage510_quality_reports(
             ),
             "virtual_imu_real_calibration_max_abs_delta": virtual_imu_quality.get(
                 "real_imu_calibration_max_abs_delta"
+            ),
+            "geometric_alignment_enabled": geometric_alignment_quality.get("enabled"),
+            "geometric_alignment_status": geometric_alignment_quality.get("status"),
+            "geometric_alignment_subject_id": geometric_alignment_quality.get("subject_id"),
+            "geometric_alignment_capture_id": geometric_alignment_quality.get("capture_id"),
+            "geometric_alignment_real_imu_npz_path": geometric_alignment_quality.get("real_imu_npz_path"),
+            "geometric_alignment_transform_source": geometric_alignment_quality.get("transform_source"),
+            "geometric_alignment_estimated_sensors": geometric_alignment_quality.get("estimated_sensor_names"),
+            "geometric_alignment_mean_gyro_corr_before": geometric_alignment_quality.get(
+                "mean_gyro_corr_before"
+            ),
+            "geometric_alignment_mean_gyro_corr_after": geometric_alignment_quality.get(
+                "mean_gyro_corr_after"
+            ),
+            "geometric_alignment_mean_acc_corr_before": geometric_alignment_quality.get(
+                "mean_acc_corr_before"
+            ),
+            "geometric_alignment_mean_acc_corr_after": geometric_alignment_quality.get(
+                "mean_acc_corr_after"
             ),
             "sensor_frame_estimation_enabled": frame_alignment_quality.get("enabled"),
             "sensor_frame_estimation_status": frame_alignment_quality.get("status"),

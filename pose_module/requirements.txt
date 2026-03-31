@@ -7,6 +7,7 @@ pandas
 matplotlib
 pyyaml
 ipython
+ipykernel
 umap-learn
 
 # Backend OpenMMLab (ViTPose + MotionBERT)

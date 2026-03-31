@@ -6,6 +6,7 @@ __all__ = [
     "run_pose2d_pipeline",
     "run_pose3d_pipeline",
     "run_virtual_imu_pipeline",
+    "run_geometric_alignment",
     "generate_pose_from_video",
     "generate_virtual_imu_from_video",
     "download_required_models",
@@ -25,6 +26,10 @@ def __getattr__(name: str):
         from .pipeline import run_virtual_imu_pipeline
 
         return run_virtual_imu_pipeline
+    if name == "run_geometric_alignment":
+        from .imu_alignment import run_geometric_alignment
+
+        return run_geometric_alignment
     if name == "generate_pose_from_video":
         from .pipeline import generate_pose_from_video
 
