@@ -15,7 +15,9 @@ from pose_module.robot_emotions.metadata import resolve_sensor_names
 
 from .interfaces import AlignmentConfig, IMUSequence, SensorSubjectTransform
 
-DEFAULT_ALIGNMENT_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "imu_alignment_config.yaml"
+DEFAULT_ALIGNMENT_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent / "configs" / "imu_alignment_config.yaml"
+)
 
 
 def load_alignment_runtime_settings(config_path: str | Path | None = None) -> dict[str, Any]:
