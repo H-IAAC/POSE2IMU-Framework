@@ -1,0 +1,3 @@
+[submodule "st-gcn"]
+	path = st-gcn
+	url = git@github.com:yysijie/st-gcn.git

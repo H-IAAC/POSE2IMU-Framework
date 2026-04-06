@@ -20,6 +20,16 @@ SENSOR_LINESTYLES = ("-", "--", ":", "-.")
 CAPTURE_TABLE_MAX_COLUMNS = 24
 CAPTURE_TABLE_DISPLAY_WIDTH = 240
 
+
+def normalize_take_id(value: Any, clip_id: str | None = None) -> str:
+	if value in (None, ""):
+		if clip_id is not None:
+			match = re.search(r"_(\d+)$", str(clip_id))
+			if match is not None:
+				return str(int(match.group(1)))
+		return "1"
+	return str(value)
+
 def find_project_root() -> Path:
 	"""Finds IMUGPT repository root by searching for `pose_module` and `output`."""
 	candidate_roots = []
@@ -62,6 +72,7 @@ def build_exported_capture_table(output_root: Path | str) -> pd.DataFrame:
 	configure_capture_table_display()
 	output_root = Path(output_root)
 	rows = []
+	seen_clip_ids: set[str] = set()
 
 	manifest_path = output_root / "virtual_imu_manifest.jsonl"
 	if not manifest_path.exists():
@@ -91,19 +102,60 @@ def build_exported_capture_table(output_root: Path | str) -> pd.DataFrame:
 			domain = str(entry.get("domain"))
 			user_id = int(entry.get("user_id"))
 			tag_number = int(entry.get("tag_number"))
+			clip_id = str(entry.get("clip_id"))
 			capture_metadata = resolve_capture_metadata(domain=domain, user_id=user_id, tag_number=tag_number)
 			rows.append(
 				{
-					"clip_id": str(entry.get("clip_id")),
+					"clip_id": clip_id,
 					"domain": domain,
 					"user_id": user_id,
 					"tag_number": tag_number,
-					"take_id": entry.get("take_id"),
+					"take_id": normalize_take_id(entry.get("take_id"), clip_id=clip_id),
 					"clip_dir": str(real_npz.parent.resolve()),
 					"pose_dir": str(virtual_npz.parent.resolve()),
 					**capture_metadata,
 				}
 			)
+			seen_clip_ids.add(clip_id)
+
+	for metadata_path in sorted(output_root.rglob("metadata.json")):
+		try:
+			metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+		except Exception:
+			continue
+
+		clip_id = str(metadata.get("clip_id") or "")
+		if not clip_id or clip_id in seen_clip_ids:
+			continue
+
+		artifacts = dict(metadata.get("artifacts", {}))
+		real_npz_path = artifacts.get("imu_npz_path")
+		virtual_npz_path = artifacts.get("virtual_imu_npz_path")
+		if real_npz_path in (None, "") or virtual_npz_path in (None, ""):
+			continue
+
+		real_npz = Path(str(real_npz_path))
+		virtual_npz = Path(str(virtual_npz_path))
+		if not real_npz.exists() or not virtual_npz.exists():
+			continue
+
+		domain = str(metadata.get("domain"))
+		user_id = int(metadata.get("user_id"))
+		tag_number = int(metadata.get("tag_number"))
+		capture_metadata = resolve_capture_metadata(domain=domain, user_id=user_id, tag_number=tag_number)
+		rows.append(
+			{
+				"clip_id": clip_id,
+				"domain": domain,
+				"user_id": user_id,
+				"tag_number": tag_number,
+				"take_id": normalize_take_id(metadata.get("take_id"), clip_id=clip_id),
+				"clip_dir": str(real_npz.parent.resolve()),
+				"pose_dir": str(virtual_npz.parent.resolve()),
+				**capture_metadata,
+			}
+		)
+		seen_clip_ids.add(clip_id)
 
 	frame = pd.DataFrame(rows)
 	if frame.empty:
@@ -117,7 +169,8 @@ def select_capture_row(captures_df: pd.DataFrame, domain: str, user_id: int, tag
 	frame = frame[(frame["domain"] == str(domain)) & (frame["user_id"] == int(user_id)) & (frame["tag_number"] == int(tag_number))]
  
 	if take_id not in (None, ""):
-		frame = frame[frame["take_id"] == take_id]
+		take_id_value = str(take_id)
+		frame = frame[frame["take_id"].fillna("").astype(str) == take_id_value]
 	if frame.empty:
 		raise ValueError("No capture found for the choosen parameters.\nConsult CAPTURES_DF for the available options.")
 	if len(frame) > 1:
