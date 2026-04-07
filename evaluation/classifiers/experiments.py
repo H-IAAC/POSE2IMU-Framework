@@ -8,11 +8,6 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 
 try:
-    from tqdm.auto import tqdm
-except ImportError:  # pragma: no cover - optional dependency guard
-    tqdm = None
-
-try:
     from sklearn.model_selection import StratifiedGroupKFold
 except ImportError:  # pragma: no cover - depends on sklearn version
     StratifiedGroupKFold = None
@@ -26,7 +21,13 @@ from .metrics import (
     suite_results_frame,
     summarize_unsupported_classes,
 )
-from .training import ModelConfig, TrainingConfig, evaluate_multitask_model, train_multitask_model
+from .training import (
+    ModelConfig,
+    TrainingConfig,
+    evaluate_multitask_model,
+    resolve_progress_tqdm,
+    train_multitask_model,
+)
 
 EXPERIMENT_SPECS: dict[str, dict[str, Any]] = {
     "vision_only": {
@@ -298,6 +299,13 @@ def run_single_experiment(
         eval_indices=np.asarray(split["test_indices"], dtype=np.int64),
     )
 
+    split_id = int(split.get("split_id", 0))
+    total_splits = int(split.get("num_splits", 0))
+    if total_splits > 0:
+        progress_label = f"{experiment_name} | fold {split_id + 1}/{total_splits}"
+    else:
+        progress_label = f"{experiment_name} | fold {split_id + 1}"
+
     training_result = train_multitask_model(
         train_arrays=prepared["train"],
         val_arrays=prepared["val"],
@@ -308,6 +316,7 @@ def run_single_experiment(
         use_imu_branch=bool(prepared["spec"]["use_imu"]),
         use_domain_head=bool(prepared["spec"]["use_domain_head"]),
         scored_class_ids=scored_class_ids,
+        progress_label=progress_label,
     )
     test_report = evaluate_multitask_model(
         training_result["model"],
@@ -320,7 +329,7 @@ def run_single_experiment(
     )
     return {
         "experiment_name": str(experiment_name),
-        "split_id": int(split.get("split_id", 0)),
+        "split_id": split_id,
         "spec": dict(prepared["spec"]),
         "metrics": dict(test_report["metrics"]),
         "history": list(training_result["history"]),
@@ -472,20 +481,31 @@ def run_experiment_suite(
     results = []
     total_runs = int(len(selected_experiments) * len(splits))
     suite_progress = None
-    if bool(resolved_training_config.show_progress) and tqdm is not None:
-        suite_progress = tqdm(total=total_runs, desc="Experiment suite", unit="fold")
+    progress_backend = str(resolved_training_config.progress_backend).strip().lower()
+    progress_tqdm = resolve_progress_tqdm()
+    use_tqdm_progress = (
+        bool(resolved_training_config.show_progress)
+        and progress_backend in {"auto", "tqdm"}
+        and progress_tqdm is not None
+    )
+    if use_tqdm_progress:
+        suite_progress = progress_tqdm(total=total_runs, desc="Experiment suite", unit="fold")
 
     try:
+        run_index = 0
         for experiment_name in selected_experiments:
             for split in splits:
+                run_index += 1
+                split_with_context = dict(split)
+                split_with_context["num_splits"] = len(splits)
+                current_fold = int(split.get("split_id", 0)) + 1
                 if suite_progress is not None:
-                    current_fold = int(split.get("split_id", 0)) + 1
                     suite_progress.set_postfix(experiment=experiment_name, fold=f"{current_fold}/{len(splits)}")
                 results.append(
                     run_single_experiment(
                         dataset_bundle,
                         experiment_name=experiment_name,
-                        split=split,
+                        split=split_with_context,
                         model_config=model_config,
                         training_config=resolved_training_config,
                         scored_class_ids=scored_class_ids,

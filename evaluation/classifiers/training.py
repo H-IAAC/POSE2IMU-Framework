@@ -10,9 +10,9 @@ import pandas as pd
 from sklearn.utils.class_weight import compute_class_weight
 
 try:
-    from tqdm.auto import tqdm
+    from tqdm import tqdm as _std_tqdm
 except ImportError:  # pragma: no cover - optional dependency guard
-    tqdm = None
+    _std_tqdm = None
 
 from .metrics import compute_multitask_metrics
 from .model import MultitaskFusionClassifier, ensure_torch_available
@@ -85,6 +85,31 @@ class TrainingConfig:
     sampler_power: float = 1.0
     num_workers: int = 0
     show_progress: bool = True
+    progress_backend: str = "auto"
+
+
+def resolve_progress_tqdm() -> Any | None:
+    if _std_tqdm is None:
+        return None
+    try:
+        from IPython import get_ipython
+    except ImportError:  # pragma: no cover - optional notebook dependency guard
+        return _std_tqdm
+
+    if get_ipython() is None:
+        return _std_tqdm
+
+    try:
+        import ipywidgets  # noqa: F401
+        from tqdm.notebook import tqdm as notebook_tqdm
+    except ImportError:  # pragma: no cover - widget support is optional
+        return _std_tqdm
+    return notebook_tqdm
+
+
+def _use_tqdm_progress(training_config: TrainingConfig) -> bool:
+    backend = str(training_config.progress_backend).strip().lower()
+    return bool(training_config.show_progress) and backend in {"auto", "tqdm"} and resolve_progress_tqdm() is not None
 
 
 class WindowTensorDataset(Dataset):
@@ -479,6 +504,7 @@ def train_multitask_model(
     use_imu_branch: bool,
     use_domain_head: bool,
     scored_class_ids: Mapping[str, Sequence[int]] | None = None,
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     ensure_training_dependencies()
     device = _resolve_device(training_config.device)
@@ -515,11 +541,17 @@ def train_multitask_model(
     best_state = copy.deepcopy(model.state_dict())
     best_metric = -np.inf
     history: list[dict[str, Any]] = []
+    use_tqdm_progress = _use_tqdm_progress(training_config)
+    progress_tqdm = resolve_progress_tqdm()
 
     epoch_indices = range(int(training_config.max_epochs))
     epoch_iterator = epoch_indices
-    if bool(training_config.show_progress) and tqdm is not None:
-        epoch_iterator = tqdm(epoch_indices, total=len(epoch_indices), desc="Training", unit="epoch")
+    if use_tqdm_progress:
+        epoch_desc = "Training" if not progress_label else f"{progress_label} | Training"
+        epoch_iterator = progress_tqdm(epoch_indices, total=len(epoch_indices), desc=epoch_desc, unit="epoch")
+    elif bool(training_config.show_progress):
+        header = "Training" if not progress_label else progress_label
+        print(f"{header} | epochs={int(training_config.max_epochs)}", flush=True)
 
     for epoch_index in epoch_iterator:
         model.train()
@@ -528,11 +560,12 @@ def train_multitask_model(
         domain_iterator = None if domain_loader is None else cycle(domain_loader)
         focal_heads = {str(head_name) for head_name in training_config.cb_focal_heads}
         batch_iterator = classification_loader
-        if bool(training_config.show_progress) and tqdm is not None:
-            batch_iterator = tqdm(
+        if use_tqdm_progress:
+            batch_desc_prefix = "" if not progress_label else f"{progress_label} | "
+            batch_iterator = progress_tqdm(
                 classification_loader,
                 total=len(classification_loader),
-                desc=f"Epoch {int(epoch_index) + 1}/{int(training_config.max_epochs)}",
+                desc=f"{batch_desc_prefix}Epoch {int(epoch_index) + 1}/{int(training_config.max_epochs)}",
                 unit="batch",
                 leave=False,
             )
@@ -599,10 +632,10 @@ def train_multitask_model(
 
             running_loss += float(loss.item())
             num_batches += 1
-            if bool(training_config.show_progress) and tqdm is not None:
+            if use_tqdm_progress:
                 batch_iterator.set_postfix(train_loss=f"{running_loss / max(1, num_batches):.4f}")
 
-        if bool(training_config.show_progress) and tqdm is not None:
+        if use_tqdm_progress:
             batch_iterator.close()
 
         val_report = _gather_predictions(
@@ -630,13 +663,21 @@ def train_multitask_model(
                 "val_global_score_macro_f1_mean": float(val_report["metrics"].get("global_score_macro_f1_mean") or 0.0),
             }
         )
-        if bool(training_config.show_progress) and tqdm is not None:
+        if use_tqdm_progress:
             epoch_iterator.set_postfix(
                 train_loss=f"{running_loss / max(1, num_batches):.4f}",
                 val_metric=f"{float(val_metric_value):.4f}",
             )
+        elif bool(training_config.show_progress):
+            label = "Training" if not progress_label else progress_label
+            print(
+                f"{label} | epoch {int(epoch_index) + 1}/{int(training_config.max_epochs)} "
+                f"train_loss={running_loss / max(1, num_batches):.4f} "
+                f"val_metric={float(val_metric_value):.4f}",
+                flush=True,
+            )
 
-    if bool(training_config.show_progress) and tqdm is not None:
+    if use_tqdm_progress:
         epoch_iterator.close()
 
     model.load_state_dict(best_state)

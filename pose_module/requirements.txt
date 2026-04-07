@@ -8,6 +8,7 @@ matplotlib
 pyyaml
 ipython
 ipykernel
+ipywidgets
 umap-learn
 scikit-learn
 
