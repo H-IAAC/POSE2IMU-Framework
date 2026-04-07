@@ -19,6 +19,7 @@ from .features import (
     build_pose_sensor_proxy,
     extract_quality_vector,
     load_pose_sequence3d,
+    resolve_imu_orientation_features,
 )
 
 CaptureBlacklistEntry = tuple[str, int, int] | tuple[str, int, int, str | int]
@@ -46,6 +47,7 @@ class WindowedDatasetConfig:
     alignment_dtw_radius: int = 20
     selected_sensors: Sequence[str] | None = None
     synthetic_variant: str = "raw"
+    imu_feature_mode: str = "acc_gyro"
     max_windows_per_capture: int | None = None
     random_state: int = 42
     capture_blacklist: Sequence[CaptureBlacklistEntry] = ALL_CAPTURE_BLACKLIST
@@ -352,14 +354,30 @@ def prepare_capture_windows(
     synthetic_acc_selected = _select_sensor_block(synthetic_capture["acc"], synthetic_capture["sensor_names"], selected_sensors)
     synthetic_gyro_selected = _select_sensor_block(synthetic_capture["gyro"], synthetic_capture["sensor_names"], selected_sensors)
 
-    pose_summary = build_motion_summary_signal(pose_proxy_acc, pose_proxy_gyro)
-    real_summary = build_motion_summary_signal(real_acc_selected, real_gyro_selected)
+    pose_proxy_orientation = resolve_imu_orientation_features(
+        pose_proxy_acc,
+        pose_proxy_gyro,
+        feature_mode=resolved_config.imu_feature_mode,
+    )
+    real_orientation = resolve_imu_orientation_features(
+        real_acc_selected,
+        real_gyro_selected,
+        feature_mode=resolved_config.imu_feature_mode,
+    )
+    synthetic_orientation = resolve_imu_orientation_features(
+        synthetic_acc_selected,
+        synthetic_gyro_selected,
+        feature_mode=resolved_config.imu_feature_mode,
+    )
+
+    pose_summary = build_motion_summary_signal(pose_proxy_acc, pose_proxy_orientation["values"])
+    real_summary = build_motion_summary_signal(real_acc_selected, real_orientation["values"])
 
     real_alignment = align_target_to_reference(
         pose_features["timestamps_sec"],
         pose_features["values"],
         real_capture["timestamps_sec"],
-        np.concatenate([real_acc_selected, real_gyro_selected], axis=2),
+        np.concatenate([real_acc_selected, real_orientation["values"]], axis=2),
         reference_summary=pose_summary,
         target_summary=real_summary,
         resample_method=resolved_config.alignment_resample_method,
@@ -374,18 +392,29 @@ def prepare_capture_windows(
 
     aligned_synthetic_raw = resample_values_to_reference(
         synthetic_capture["timestamps_sec"],
-        np.concatenate([synthetic_acc_selected, synthetic_gyro_selected], axis=2),
+        np.concatenate([synthetic_acc_selected, synthetic_orientation["values"]], axis=2),
         aligned_timestamps,
         method=resolved_config.alignment_resample_method,
     )
     aligned_synthetic_acc = aligned_synthetic_raw[:, :, :3]
     aligned_synthetic_gyro = aligned_synthetic_raw[:, :, 3:]
 
-    real_imu_features = build_imu_feature_tensor(aligned_real_acc, aligned_real_gyro, aligned_timestamps)
-    synthetic_imu_features = build_imu_feature_tensor(aligned_synthetic_acc, aligned_synthetic_gyro, aligned_timestamps)
+    real_imu_features = build_imu_feature_tensor(
+        aligned_real_acc,
+        aligned_real_gyro,
+        aligned_timestamps,
+        feature_mode=resolved_config.imu_feature_mode,
+    )
+    synthetic_imu_features = build_imu_feature_tensor(
+        aligned_synthetic_acc,
+        aligned_synthetic_gyro,
+        aligned_timestamps,
+        feature_mode=resolved_config.imu_feature_mode,
+    )
     quality_vector = extract_quality_vector(
         row.get("quality_report"),
         pose_imu_alignment=real_alignment,
+        imu_feature_mode=resolved_config.imu_feature_mode,
     )
 
     pose_window_bundle = segment_signal_windows(
@@ -454,6 +483,7 @@ def prepare_capture_windows(
                 "window_overlap": float(resolved_config.overlap),
                 "quality_status": str(row.get("status", "unknown")),
                 "synthetic_variant": str(resolved_config.synthetic_variant),
+                "imu_feature_mode": str(real_imu_features["feature_mode"]),
                 "selected_sensors": tuple(str(sensor_name) for sensor_name in selected_sensors),
                 "pose_imu_lag_samples": int(real_alignment["lag_samples"]),
                 "pose_imu_lag_seconds": float(real_alignment["lag_seconds"]),
@@ -476,6 +506,7 @@ def prepare_capture_windows(
         "alignment_report": {
             "clip_id": str(row["clip_id"]),
             "selected_sensors": list(selected_sensors),
+            "imu_feature_mode": str(real_imu_features["feature_mode"]),
             "lag_samples": int(real_alignment["lag_samples"]),
             "lag_seconds": float(real_alignment["lag_seconds"]),
             "correlation_before_dtw": real_alignment["correlation_before_dtw"],
@@ -486,6 +517,7 @@ def prepare_capture_windows(
         },
         "pose_feature_names": list(pose_features["channel_names"]),
         "imu_feature_names": list(real_imu_features["channel_names"]),
+        "imu_feature_mode": str(real_imu_features["feature_mode"]),
         "quality_feature_names": list(quality_vector["feature_names"]),
         "joint_names": list(pose_features["joint_names"]),
         "selected_sensors": list(selected_sensors),
@@ -537,6 +569,7 @@ def build_windowed_multimodal_dataset(
     quality_feature_names: list[str] | None = None
     joint_names: list[str] | None = None
     selected_sensors: list[str] | None = None
+    imu_feature_mode: str | None = None
 
     for _, capture_row in capture_table.iterrows():
         prepared = prepare_capture_windows(capture_row, config=resolved_config)
@@ -554,6 +587,7 @@ def build_windowed_multimodal_dataset(
             quality_feature_names = list(prepared["quality_feature_names"])
             joint_names = list(prepared["joint_names"])
             selected_sensors = list(prepared["selected_sensors"])
+            imu_feature_mode = str(prepared["imu_feature_mode"])
 
     if len(metadata_blocks) == 0:
         raise RuntimeError("No valid capture produced aligned windows for classifier training.")
@@ -584,6 +618,7 @@ def build_windowed_multimodal_dataset(
         "label_encoders": label_encoders,
         "pose_feature_names": [] if pose_feature_names is None else pose_feature_names,
         "imu_feature_names": [] if imu_feature_names is None else imu_feature_names,
+        "imu_feature_mode": "acc_gyro" if imu_feature_mode is None else imu_feature_mode,
         "quality_feature_names": [] if quality_feature_names is None else quality_feature_names,
         "joint_names": [] if joint_names is None else joint_names,
         "selected_sensors": [] if selected_sensors is None else selected_sensors,

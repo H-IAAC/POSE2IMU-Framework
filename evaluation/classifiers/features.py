@@ -7,6 +7,7 @@ import numpy as np
 from pose_module.interfaces import PoseSequence3D
 
 _EPSILON = 1e-8
+_VALID_IMU_FEATURE_MODES = {"acc_gyro", "acc_euler"}
 
 SENSOR_TO_SEGMENT_JOINTS: dict[str, tuple[str, str]] = {
     "waist": ("Pelvis", "Spine3"),
@@ -221,48 +222,120 @@ def build_motion_summary_signal(acc_xyz: np.ndarray, gyro_xyz: np.ndarray) -> np
     return np.mean(standardized, axis=1).astype(np.float32, copy=False)
 
 
-def build_imu_feature_tensor(
+def compute_euler_angles_from_acceleration(acc_xyz: np.ndarray) -> np.ndarray:
+    acc = np.asarray(acc_xyz, dtype=np.float32)
+    if acc.ndim != 3 or acc.shape[2] != 3:
+        raise ValueError("acc_xyz must have shape [T, S, 3].")
+
+    acc_x = acc[:, :, 0]
+    acc_y = acc[:, :, 1]
+    acc_z = acc[:, :, 2]
+
+    theta = np.degrees(
+        np.arctan(
+            acc_x / np.maximum(np.sqrt((acc_y ** 2) + (acc_z ** 2)), _EPSILON)
+        )
+    )
+    psi = np.degrees(
+        np.arctan(
+            acc_y / np.maximum(np.sqrt((acc_x ** 2) + (acc_z ** 2)), _EPSILON)
+        )
+    )
+    phi = np.degrees(
+        np.arctan(
+            acc_z / np.maximum(np.sqrt((acc_x ** 2) + (acc_y ** 2)), _EPSILON)
+        )
+    )
+    return np.stack([theta, psi, phi], axis=2).astype(np.float32, copy=False)
+
+
+def resolve_imu_orientation_features(
     acc_xyz: np.ndarray,
     gyro_xyz: np.ndarray,
-    timestamps_sec: np.ndarray,
+    *,
+    feature_mode: str = "acc_gyro",
 ) -> dict[str, Any]:
     acc = np.asarray(acc_xyz, dtype=np.float32)
     gyro = np.asarray(gyro_xyz, dtype=np.float32)
-    timestamps = np.asarray(timestamps_sec, dtype=np.float32)
+    normalized_feature_mode = str(feature_mode).strip().lower()
+    if normalized_feature_mode not in _VALID_IMU_FEATURE_MODES:
+        raise ValueError(
+            "feature_mode must be one of "
+            f"{sorted(_VALID_IMU_FEATURE_MODES)}."
+        )
     if acc.shape != gyro.shape:
         raise ValueError("acc_xyz and gyro_xyz must have the same shape.")
     if acc.ndim != 3 or acc.shape[2] != 3:
         raise ValueError("acc_xyz and gyro_xyz must have shape [T, S, 3].")
+
+    if normalized_feature_mode == "acc_gyro":
+        orientation_block = gyro
+        orientation_channel_names = [
+            "gyro_x",
+            "gyro_y",
+            "gyro_z",
+        ]
+        orientation_norm_name = "gyro_norm"
+    else:
+        orientation_block = compute_euler_angles_from_acceleration(acc)
+        orientation_channel_names = [
+            "euler_theta_deg",
+            "euler_psi_deg",
+            "euler_phi_deg",
+        ]
+        orientation_norm_name = "euler_norm_deg"
+
+    return {
+        "values": np.asarray(orientation_block, dtype=np.float32),
+        "norm": np.linalg.norm(orientation_block, axis=2, keepdims=True).astype(np.float32, copy=False),
+        "channel_names": orientation_channel_names,
+        "norm_name": orientation_norm_name,
+        "feature_mode": normalized_feature_mode,
+    }
+
+
+def build_imu_feature_tensor(
+    acc_xyz: np.ndarray,
+    gyro_xyz: np.ndarray,
+    timestamps_sec: np.ndarray,
+    *,
+    feature_mode: str = "acc_gyro",
+) -> dict[str, Any]:
+    acc = np.asarray(acc_xyz, dtype=np.float32)
+    timestamps = np.asarray(timestamps_sec, dtype=np.float32)
+    orientation = resolve_imu_orientation_features(
+        acc_xyz,
+        gyro_xyz,
+        feature_mode=feature_mode,
+    )
     if acc.shape[0] != timestamps.shape[0]:
         raise ValueError("timestamps_sec must match the temporal dimension of acc_xyz and gyro_xyz.")
 
     jerk = temporal_derivative(acc, timestamps)
     acc_norm = np.linalg.norm(acc, axis=2, keepdims=True)
-    gyro_norm = np.linalg.norm(gyro, axis=2, keepdims=True)
     jerk_norm = np.linalg.norm(jerk, axis=2, keepdims=True)
 
     feature_tensor = np.concatenate(
-        [acc, gyro, jerk, acc_norm, gyro_norm, jerk_norm],
+        [acc, orientation["values"], jerk, acc_norm, orientation["norm"], jerk_norm],
         axis=2,
     ).astype(np.float32, copy=False)
     channel_names = [
         "acc_x",
         "acc_y",
         "acc_z",
-        "gyro_x",
-        "gyro_y",
-        "gyro_z",
+        *orientation["channel_names"],
         "jerk_x",
         "jerk_y",
         "jerk_z",
         "acc_norm",
-        "gyro_norm",
+        orientation["norm_name"],
         "jerk_norm",
     ]
     return {
         "values": feature_tensor,
         "channel_names": channel_names,
         "timestamps_sec": timestamps,
+        "feature_mode": str(orientation["feature_mode"]),
     }
 
 
@@ -270,32 +343,34 @@ def extract_quality_vector(
     quality_report: dict[str, Any] | None,
     *,
     pose_imu_alignment: dict[str, Any] | None = None,
+    imu_feature_mode: str = "acc_gyro",
 ) -> dict[str, Any]:
     report = {} if quality_report is None else dict(quality_report)
     alignment = {} if pose_imu_alignment is None else dict(pose_imu_alignment)
-    values = np.asarray(
-        [
-            float(report.get("visible_joint_ratio", 0.0) or 0.0),
-            float(report.get("mean_confidence", 0.0) or 0.0),
-            float(report.get("temporal_jitter_score", 0.0) or 0.0),
-            float(report.get("root_drift_score", 0.0) or 0.0),
-            float(report.get("geometric_alignment_mean_acc_corr_after", 0.0) or 0.0),
-            float(report.get("geometric_alignment_mean_gyro_corr_after", 0.0) or 0.0),
-            float(alignment.get("correlation_after_dtw", 0.0) or 0.0),
-            float(alignment.get("dtw_normalized_distance", 0.0) or 0.0),
-        ],
-        dtype=np.float32,
-    )
+    normalized_feature_mode = str(imu_feature_mode).strip().lower()
+    if normalized_feature_mode not in _VALID_IMU_FEATURE_MODES:
+        raise ValueError(
+            "imu_feature_mode must be one of "
+            f"{sorted(_VALID_IMU_FEATURE_MODES)}."
+        )
+
+    feature_items: list[tuple[str, float]] = [
+        ("visible_joint_ratio", float(report.get("visible_joint_ratio", 0.0) or 0.0)),
+        ("mean_confidence", float(report.get("mean_confidence", 0.0) or 0.0)),
+        ("temporal_jitter_score", float(report.get("temporal_jitter_score", 0.0) or 0.0)),
+        ("root_drift_score", float(report.get("root_drift_score", 0.0) or 0.0)),
+        ("geometric_alignment_mean_acc_corr_after", float(report.get("geometric_alignment_mean_acc_corr_after", 0.0) or 0.0)),
+        ("pose_imu_correlation_after_dtw", float(alignment.get("correlation_after_dtw", 0.0) or 0.0)),
+        ("pose_imu_dtw_normalized_distance", float(alignment.get("dtw_normalized_distance", 0.0) or 0.0)),
+    ]
+    if normalized_feature_mode == "acc_gyro":
+        feature_items.insert(
+            5,
+            ("geometric_alignment_mean_gyro_corr_after", float(report.get("geometric_alignment_mean_gyro_corr_after", 0.0) or 0.0)),
+        )
+
+    values = np.asarray([value for _, value in feature_items], dtype=np.float32)
     return {
         "values": values,
-        "feature_names": [
-            "visible_joint_ratio",
-            "mean_confidence",
-            "temporal_jitter_score",
-            "root_drift_score",
-            "geometric_alignment_mean_acc_corr_after",
-            "geometric_alignment_mean_gyro_corr_after",
-            "pose_imu_correlation_after_dtw",
-            "pose_imu_dtw_normalized_distance",
-        ],
+        "feature_names": [name for name, _ in feature_items],
     }
