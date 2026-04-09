@@ -51,6 +51,7 @@ class LegacyT2MGPTBackendConfig:
     transformer_num_heads: int = 16
     ff_rate: int = 4
     drop_out_rate: float = 0.1
+    max_output_frames: int = 196
     extra_mean_candidates: tuple[str, ...] = field(
         default_factory=lambda: (
             "dataset/HumanML3D/Mean.npy",
@@ -93,13 +94,22 @@ class LegacyT2MGPTBackend:
             raise ValueError("Prompt backend requires a non-empty prompt_text.")
         runtime = self._ensure_runtime()
         torch = runtime["torch"]
+        target_length = _resolve_target_length(
+            fps=float(fps),
+            duration_hint_sec=duration_hint_sec,
+            config=self.config,
+        )
 
         _seed_everything(torch=torch, seed=int(seed))
 
         text_tokens = runtime["clip"].tokenize([str(prompt_text)], truncate=True).to(runtime["device"])
         with torch.no_grad():
             clip_features = runtime["clip_model"].encode_text(text_tokens).float()
-            motion_indices = runtime["transformer"].sample(clip_features[0:1], False)
+            motion_indices = runtime["transformer"].sample(
+                clip_features[0:1],
+                False,
+                min_tokens=target_length["target_tokens"],
+            )
             decoded_motion = runtime["vqvae"].forward_decoder(motion_indices)
             predicted_xyz = runtime["recover_from_ric"](
                 (decoded_motion * runtime["std_tensor"] + runtime["mean_tensor"]).float(),
@@ -109,6 +119,8 @@ class LegacyT2MGPTBackend:
         joint_positions_xyz = predicted_xyz.detach().cpu().numpy().astype(np.float32, copy=False)
         if joint_positions_xyz.ndim == 4:
             joint_positions_xyz = joint_positions_xyz[0]
+        if target_length["target_frames"] is not None:
+            joint_positions_xyz = joint_positions_xyz[: target_length["target_frames"]]
         if output_dir is not None:
             output_dir = Path(output_dir)
         return {
@@ -122,6 +134,10 @@ class LegacyT2MGPTBackend:
                 "duration_hint_sec": (
                     None if duration_hint_sec is None else float(duration_hint_sec)
                 ),
+                "target_frames": target_length["target_frames"],
+                "target_tokens": target_length["target_tokens"],
+                "frame_factor": target_length["frame_factor"],
+                "max_supported_frames": target_length["max_supported_frames"],
                 "device": str(runtime["device"]),
                 "vq_checkpoint_path": str(Path(self.config.vq_checkpoint_path).resolve()),
                 "transformer_checkpoint_path": str(
@@ -259,6 +275,38 @@ def _resolve_device(*, torch: Any, requested: str) -> Any:
     if requested == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(str(requested))
+
+
+def _resolve_target_length(
+    *,
+    fps: float,
+    duration_hint_sec: float | None,
+    config: LegacyT2MGPTBackendConfig,
+) -> Dict[str, int | None]:
+    fps_value = float(fps)
+    if fps_value <= 0.0:
+        raise ValueError("Prompt backend requires fps > 0.")
+
+    frame_factor = int(config.stride_t) ** int(config.down_t)
+    max_tokens = max(1, int(config.block_size) - 1)
+    max_supported_frames = min(int(config.max_output_frames), max_tokens * frame_factor)
+    target_frames: int | None = None
+    target_tokens = 0
+
+    if duration_hint_sec is not None:
+        duration_value = float(duration_hint_sec)
+        if duration_value <= 0.0:
+            raise ValueError("Prompt backend requires duration_hint_sec > 0 when provided.")
+        requested_frames = max(1, int(round(duration_value * fps_value)))
+        target_frames = min(requested_frames, max_supported_frames)
+        target_tokens = min(max_tokens, int(np.ceil(target_frames / float(frame_factor))))
+
+    return {
+        "target_frames": target_frames,
+        "target_tokens": target_tokens,
+        "frame_factor": frame_factor,
+        "max_supported_frames": max_supported_frames,
+    }
 
 
 def _seed_everything(*, torch: Any, seed: int) -> None:

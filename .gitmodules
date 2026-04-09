@@ -1,3 +1,6 @@
 [submodule "st-gcn"]
 	path = st-gcn
 	url = git@github.com:yysijie/st-gcn.git
+[submodule "kimodo"]
+	path = kimodo
+	url = git@github.com:nv-tlabs/kimodo.git

@@ -30,7 +30,8 @@ class Text2Motion_Transformer(nn.Module):
         logits = self.trans_head(feat)
         return logits
 
-    def sample(self, clip_feature, if_categorial=False):
+    def sample(self, clip_feature, if_categorial=False, min_tokens=0):
+        min_tokens = max(0, min(int(min_tokens), int(self.block_size) - 1))
         for k in range(self.block_size):
             if k == 0:
                 x = []
@@ -38,6 +39,8 @@ class Text2Motion_Transformer(nn.Module):
                 x = xs
             logits = self.forward(x, clip_feature)
             logits = logits[:, -1, :]
+            if k + 1 < min_tokens:
+                logits[:, self.num_vq] = float("-inf")
             probs = F.softmax(logits, dim=-1)
             if if_categorial:
                 dist = Categorical(probs)
@@ -208,4 +211,3 @@ class CrossCondTransHead(nn.Module):
 
 
         
-
