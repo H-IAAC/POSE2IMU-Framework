@@ -4,8 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from robot_emotions_vlm.cli import describe_videos, main as robot_emotions_vlm_main
 from robot_emotions_vlm.dataset import RobotEmotionsDataset
+from robot_emotions_vlm.kimodo_generation import generate_kimodo_from_catalog, load_catalog_entries
 from robot_emotions_vlm.prompts import render_prompts
 from robot_emotions_vlm.qwen_backend import QwenGenerationConfig, QwenVideoBackend
 from robot_emotions_vlm.schemas import DescriptionValidationError, parse_model_response
@@ -52,6 +55,71 @@ class _FakeModel:
 
     def generate(self, **kwargs):
         return [[1, 2, 3, 4]]
+
+
+class _FakeKimodoModel:
+    def __init__(self) -> None:
+        self.fps = 20.0
+        self.skeleton = type("Skeleton", (), {"name": "somaskel77"})()
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        prompt_text,
+        num_frames,
+        *,
+        num_denoising_steps,
+        constraint_lst,
+        num_samples,
+        multi_prompt,
+        post_processing,
+        return_numpy,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "prompt_text": prompt_text,
+                "num_frames": num_frames,
+                "num_denoising_steps": num_denoising_steps,
+                "num_samples": num_samples,
+                "post_processing": post_processing,
+                "kwargs": kwargs,
+            }
+        )
+        return {
+            "posed_joints": np.zeros((num_samples, num_frames, 3, 3), dtype=np.float32),
+            "global_rot_mats": np.zeros((num_samples, num_frames, 3, 3, 3), dtype=np.float32),
+            "local_rot_mats": np.zeros((num_samples, num_frames, 3, 3, 3), dtype=np.float32),
+            "root_positions": np.zeros((num_samples, num_frames, 3), dtype=np.float32),
+        }
+
+
+class _FakeKimodoRuntime:
+    def __init__(self) -> None:
+        self.default_model = "Kimodo-SOMA-RP-v1"
+        self.model = _FakeKimodoModel()
+        self.seed_calls: list[int] = []
+        self.save_calls: list[dict[str, object]] = []
+
+    def resolve_device(self) -> str:
+        return "cpu"
+
+    def load_model(self, model_name, **kwargs):
+        return self.model, "kimodo-soma-rp"
+
+    def get_model_info(self, resolved_model):
+        return type("Info", (), {"display_name": "Kimodo-SOMA-RP-v1"})()
+
+    def seed_everything(self, seed: int) -> None:
+        self.seed_calls.append(seed)
+
+    def save_outputs(self, **kwargs):
+        self.save_calls.append(kwargs)
+        output_stem = Path(kwargs["output_stem"])
+        npz_path = output_stem.with_suffix(".npz")
+        npz_path.parent.mkdir(parents=True, exist_ok=True)
+        npz_path.write_bytes(b"fake_npz")
+        return {"kimodo_npz_path": str(npz_path.resolve())}
 
 
 class RobotEmotionsVLMTests(unittest.TestCase):
@@ -194,6 +262,93 @@ class RobotEmotionsVLMTests(unittest.TestCase):
                         "/tmp/RobotEmotions",
                         "--output-dir",
                         "/tmp/output",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        mocked_runner.assert_called_once()
+        mocked_print.assert_called_once()
+
+    def test_load_catalog_entries_reads_reference_clip_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            catalog_path = Path(tmp_dir) / "catalog.jsonl"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "prompt_id": "prompt_a",
+                        "prompt_text": "A person walks with calm posture, measured arm motion, upright trunk alignment, attentive head orientation, and stable leg support",
+                        "labels": {"emotion": "neutrality"},
+                        "seed": 7,
+                        "num_samples": 2,
+                        "reference_clip_id": "robot_emotions_10ms_u02_tag11",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            entries = load_catalog_entries(catalog_path)
+
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].clip_id, "robot_emotions_10ms_u02_tag11")
+            self.assertEqual(entries[0].num_samples, 2)
+
+    def test_generate_kimodo_from_catalog_writes_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            catalog_path = Path(tmp_dir) / "catalog.jsonl"
+            output_dir = Path(tmp_dir) / "kimodo_output"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "prompt_id": "robot_emotions_10ms_u02_tag11",
+                        "prompt_text": "A person stands with open posture, expressive arm motion, upright trunk alignment, lively head orientation, and stable leg support",
+                        "labels": {
+                            "emotion": "happiness",
+                            "modality": "standing",
+                            "stimulus": "autobiographical_recall",
+                        },
+                        "seed": 123,
+                        "num_samples": 1,
+                        "reference_clip_id": "robot_emotions_10ms_u02_tag11",
+                        "source_metadata": {"dataset": "RobotEmotions"},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            runtime = _FakeKimodoRuntime()
+
+            summary = generate_kimodo_from_catalog(
+                catalog_path=catalog_path,
+                output_dir=output_dir,
+                runtime=runtime,
+                duration_sec=6.0,
+            )
+
+            self.assertEqual(summary["num_ok"], 1)
+            self.assertEqual(summary["num_fail"], 0)
+            self.assertEqual(runtime.model.calls[0]["num_frames"], 120)
+            manifest_entries = [
+                json.loads(line)
+                for line in Path(summary["manifest_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(manifest_entries[0]["clip_id"], "robot_emotions_10ms_u02_tag11")
+            self.assertEqual(manifest_entries[0]["status"], "ok")
+            self.assertIn("kimodo_npz_path", manifest_entries[0]["artifacts"])
+
+    def test_cli_dispatches_generate_kimodo(self) -> None:
+        with patch("robot_emotions_vlm.cli.generate_kimodo_from_catalog", return_value={"status": "ok"}) as mocked_runner:
+            with patch("builtins.print") as mocked_print:
+                exit_code = robot_emotions_vlm_main(
+                    [
+                        "generate-kimodo",
+                        "--catalog-path",
+                        "/tmp/catalog.jsonl",
+                        "--output-dir",
+                        "/tmp/kimodo_output",
                     ]
                 )
 

@@ -1,108 +1,89 @@
-# Generating Virtual On-body Accelerometer Data from Virtual Textual Descriptions for Human Activity Recognition
+> [Criar repositório usando este template](https://github.com/new?owner=H-IAAC&template_name=Template&template_owner=H-IAAC)
+> Preencha as seções do README, e remova comentários como este após a edição.
+>
+> O README deve conter uma primeira seção abstract, sendo ela um cabeçalho de nível 1 (# Nome do projeto)
+# Framework for generating synthetic IMU based on Human Poses
 
-### [Followup Paper](https://arxiv.org/abs/2402.01049) | [Paper](https://dl.acm.org/doi/10.1145/3594738.3611361)
+> Descrição do projeto, objetivos e intenções de uso
+> Deve conter ao final a Badge (imagem horizontal) do H.IAAC e das Metas associadas ao projeto
 
-The development of robust, generalized models for human activity recognition (HAR) has been hindered by the scarcity of large-scale, labeled data sets. Recent work has shown that virtual IMU data extracted from videos using computer vision techniques can lead to substantial performance improvements when training HAR models combined with small portions of real IMU data. Inspired by recent advances in motion synthesis from textual descriptions and connecting Large Language Models (LLMs) to various AI models, we introduce an automated pipeline that first uses ChatGPT to generate diverse textual descriptions of activities. These textual descriptions are then used to generate 3D human motion sequences via a motion synthesis model, T2M-GPT, and later converted to streams of virtual IMU data. We benchmarked our approach on three HAR datasets (RealWorld, PAMAP2, and USC-HAD) and demonstrate that the use of virtual IMU training data generated using our new approach leads to significantly improved HAR model performance compared to only using real IMU data. Our approach contributes to the growing field of cross-modality transfer methods and illustrate how HAR models can be improved through the generation of virtual training data that do not require any manual effort.
+This project was developed as part of the Cognitive Architectures research line from 
+the Hub for Artificial Intelligence and Cognitive Architectures (H.IAAC) of the State University of Campinas (UNICAMP).
+See more projects from the group [here](https://h-iaac.github.io/HIAAC-Index).
 
-![Example Image](IMUGPT.png)
+<!--Badges-->
+[![](https://img.shields.io/badge/-H.IAAC-eb901a?style=for-the-badge&labelColor=black)](https://hiaac.unicamp.br/)
 
-If our project is helpful for your research, please consider citing :
+> Mantenha apenas as badges das Metas associadas ao projeto (elas podem ser reorganizadas na mesma linha)
+<!--Meta 1: Arquiteturas Cognitivas-->
+[![](https://img.shields.io/badge/-Arq.Cog-black?style=for-the-badge&labelColor=white&logo=data:image/svg%2bxml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4gPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1Ni4wMDQiIGhlaWdodD0iNTYiIHZpZXdCb3g9IjAgMCA1Ni4wMDQgNTYiPjxwYXRoIGlkPSJhcnFjb2ctMiIgZD0iTTk1NS43NzQsMjc0LjJhNi41Nyw2LjU3LDAsMCwxLTYuNTItNmwtLjA5MS0xLjE0NS04LjEtMi41LS42ODksMS4xMjNhNi41NCw2LjU0LDAsMCwxLTExLjEzNi4wMjEsNi41Niw2LjU2LDAsMCwxLDEuMzY4LTguNDQxbC44LS42NjUtMi4xNS05LjQ5MS0xLjIxNy0uMTJhNi42NTUsNi42NTUsMCwwLDEtMi41OS0uODIyLDYuNTI4LDYuNTI4LDAsMCwxLTIuNDQzLTguOSw2LjU1Niw2LjU1NiwwLDAsMSw1LjctMy4zLDYuNDU2LDYuNDU2LDAsMCwxLDIuNDU4LjQ4M2wxLC40MSw2Ljg2Ny02LjM2Ni0uNDg4LTEuMTA3YTYuNTMsNi41MywwLDAsMSw1Ljk3OC05LjE3Niw2LjU3NSw2LjU3NSwwLDAsMSw2LjUxOCw2LjAxNmwuMDkyLDEuMTQ1LDguMDg3LDIuNS42ODktMS4xMjJhNi41MzUsNi41MzUsMCwxLDEsOS4yODksOC43ODZsLS45NDcuNjUyLDIuMDk1LDkuMjE4LDEuMzQzLjAxM2E2LjUwNyw2LjUwNywwLDAsMSw1LjYwOSw5LjcyMSw2LjU2MSw2LjU2MSwwLDAsMS01LjcsMy4zMWgwYTYuNCw2LjQsMCwwLDEtMi45ODctLjczMmwtMS4wNjEtLjU1LTYuNjgsNi4xOTIuNjM0LDEuMTU5YTYuNTM1LDYuNTM1LDAsMCwxLTUuNzI1LDkuNjkxWm0wLTExLjQ2MWE0Ljk1LDQuOTUsMCwxLDAsNC45NTIsNC45NUE0Ljk1Nyw0Ljk1NywwLDAsMCw5NTUuNzc0LDI2Mi43MzlaTTkzNC44LDI1Ny4zMjVhNC45NTIsNC45NTIsMCwxLDAsNC4yMjEsMi4zNDVBNC45Myw0LjkzLDAsMCwwLDkzNC44LDI1Ny4zMjVabS0uMDIyLTEuNThhNi41MTQsNi41MTQsMCwwLDEsNi41NDksNi4xTDk0MS40LDI2M2w4LjA2MSwyLjUuNjg0LTEuMTQ1YTYuNTkxLDYuNTkxLDAsMCwxLDUuNjI0LTMuMjA2LDYuNDQ4LDYuNDQ4LDAsMCwxLDIuODQ0LjY1bDEuMDQ5LjUxOSw2LjczNC02LjI1MS0uNTkzLTEuMTQ1YTYuNTI1LDYuNTI1LDAsMCwxLC4xMTUtNi4yMjksNi42MTgsNi42MTgsMCwwLDEsMS45NjYtMi4xMzRsLjk0NC0uNjUyLTIuMDkzLTkuMjIyLTEuMzM2LS4wMThhNi41MjEsNi41MjEsMCwwLDEtNi40MjktNi4xbC0uMDc3LTEuMTY1LTguMDc0LTIuNS0uNjg0LDEuMTQ4YTYuNTM0LDYuNTM0LDAsMCwxLTguOTY2LDIuMjY0bC0xLjA5MS0uNjUyLTYuNjE3LDYuMTMxLjc1MSwxLjE5MmE2LjUxOCw2LjUxOCwwLDAsMS0yLjMsOS4xNjRsLTEuMS42MTksMi4wNiw5LjA4NywxLjQ1MS0uMUM5MzQuNDc1LDI1NS43NSw5MzQuNjI2LDI1NS43NDQsOTM0Ljc3OSwyNTUuNzQ0Wm0zNi44NDQtOC43NjJhNC45NzcsNC45NzcsMCwwLDAtNC4zMTYsMi41LDQuODg5LDQuODg5LDAsMCwwLS40NjQsMy43NjIsNC45NDgsNC45NDgsMCwxLDAsNC43NzktNi4yNjZaTTkyOC43LDIzNS41MzNhNC45NzksNC45NzksMCwwLDAtNC4zMTcsMi41LDQuOTQ4LDQuOTQ4LDAsMCwwLDQuMjkxLDcuMzkxLDQuOTc1LDQuOTc1LDAsMCwwLDQuMzE2LTIuNSw0Ljg4Miw0Ljg4MiwwLDAsMCwuNDY0LTMuNzYxLDQuOTQsNC45NCwwLDAsMC00Ljc1NC0zLjYzWm0zNi43NzYtMTAuMzQ2YTQuOTUsNC45NSwwLDEsMCw0LjIyMiwyLjM0NUE0LjkyMyw0LjkyMywwLDAsMCw5NjUuNDc5LDIyNS4xODdabS0yMC45NTItNS40MTVhNC45NTEsNC45NTEsMCwxLDAsNC45NTEsNC45NTFBNC45NTcsNC45NTcsMCwwLDAsOTQ0LjUyNywyMTkuNzcyWiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTkyMi4xNDMgLTIxOC4yKSIgZmlsbD0iIzgzMDNmZiI+PC9wYXRoPjwvc3ZnPiA=)](https://h-iaac.github.io/HIAAC-Index)
 
-```
-@inproceedings{Leng2023generating,
-author = {Leng, Zikang and Kwon, Hyeokhyen and Ploetz, Thomas},
-title = {Generating Virtual On-Body Accelerometer Data from Virtual Textual Descriptions for Human Activity Recognition},
-year = {2023},
-doi = {10.1145/3594738.3611361},
-booktitle = {Proceedings of the 2023 ACM International Symposium on Wearable Computers},
-series = {ISWC '23}
+> As seguintes seções são obrigatórias, devendo começar com um cabeçalho de nível 2 (## Nome da seção), mantendo o nome delas. No caso de nomes condicionais (A / B), é possível manter assim ou escolher apenas um nome (## A / B ou ## A ou ## B)
+>
+> Caso deseje, pode adicionar outras seções além das obrigatórias (utilize apenas cabeçalhos de nível 2 e maior)
+
+## Repository Structure
+> Lista e descrição das pastas e arquivos importantes na raiz do repositório
+
+- \<pasta>: \<descrição>
+
+
+## Dependencies / Requirements
+
+> Descrição do passo-a-passo para instalação de bibliotecas, softwares e demais ferramentas
+> ncessárias para execução do projeto antes de se clonar o repositório, assim como possíveis
+> requisitos mínimos para o projeto (processador, gpu, compilador, etc).
+
+## Installation / Usage
+
+> Passo-a-passo para execução do projeto localmente, assim como parâmetros de configuração
+> aceitos (por exemplo, como trocar o caminho para o arquivo de entrada ou saída). No caso de 
+> bibliotecas/API fornecer o link para a documentação do mesmo se disponível.
+
+## Citation
+
+> Forneça o Bibtex para citação do repositório.
+>
+> Ele deve ser um bloco de código do tipo bibtex (\```bibtex CITAÇÃO \```), contendo uma citação do tipo ```@software```, para o repositório. Existe um script para gerar a citação automaticamente (veja ao final deste arquivo).
+>
+> A primeira citação deve ser ao código do repositório. Citação a outras produções relacionadas podem vir em seguida.
+
+<!--Don't remove the following tags, it's used for placing the generated citation from the CFF file-->
+<!--CITATION START-->
+```bibtex
+@software{
+
 }
-
-@article{leng2024imugpt,
-      title={IMUGPT 2.0: Language-Based Cross Modality Transfer for Sensor-Based Human Activity Recognition},
-      author={Zikang Leng and Amitrajit Bhattacharjee and Hrudhai Rajasekhar and Lizhe Zhang and Elizabeth Bruda and Hyeokhyen Kwon and Thomas Plötz},
-      year={2024},
-      eprint={2402.01049},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
 ```
+<!--CITATION END-->
 
-## 🚩 News
+## Authors
 
-- [2024/2/1] IMUGPT 2.0 Paper uploaded to Arxiv
-- [2023/10/11] **IMUGPT received the Best Paper Honorable Mention Award!** 🏆
-- [2023/07/20] **Paper accepted by UbiComp/ISWC 2023!**
-- [2023/07/15] Init project
-- [2023/05/04] Uploaded Paper to Arxiv
+> Lista ordenada por data das pessoas que desenvolveram algo neste repositório. Deve ter ao menos 1 autor. Inclua todas as pessoas envolvidas no projeto e desenvolvimento
+>
+> Você também pode indicar um link para o perfil de algum autor: \[Nome do Autor]\(Link para o Perfil)
+  
+- (\<ano início>-\<ano fim>) \<Nome>: \<degree>, \<instituição>
+  
+## Acknowledgements
 
-## Installation
+> Agradecimento as intituições de formento.
 
-Run the follwing code to set up T2M-GPT part of IMUGPT
-
-```bash
-conda env create -f environment.yml
-conda activate IMUGPT
-conda install ipykernel
-python -m ipykernel install --user --name IMUGPT
-```
-
-When you run the notebooks, make sure to select IMUGPT as the kernel. Else, you might have errors.
-
-You may encounter error when creating the environment, which will cause some packages to not installed. In that case, first manually install the following packages. Then follow the code in the following sections to download all the required components of T2M-GPT. Lastly, install any missing packages when you run into any missing packages error when running the notebooks.
-
-```bash
-pip install torch==1.9.1+cu111 torchvision==0.10.1+cu111 torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
-pip install git+https://github.com/openai/CLIP.git
-pip install gdown
-sudo apt update
-sudo apt install unzip
-```
-
-Tested on Ubuntu 20.04.
-
-## Dependencies
-
-```bash
-bash dataset/prepare/download_glove.sh
-```
-
-## Motion & text feature extractors:
-
-We use the same extractors provided by [t2m](https://github.com/EricGuo5513/text-to-motion) to evaluate our generated motions. Please download the extractors.
-
-```bash
-bash dataset/prepare/download_extractor.sh
-```
-
-## Pre-trained models
-
-The pretrained model files will be stored in the 'pretrained' folder:
-
-```bash
-bash dataset/prepare/download_model.sh
-```
-
-## Imusim Installation
-
-Use the following commands to install imusim
-
-```bash
-conda activate IMUGPT
-cd imusim
-python setup_new.py install
-```
-
-## Demo
-
-Use demo.ipynb to verify everything have been installed correctly.
-
-## Workflow
-
-prompt_generation.ipynb -> text_to_bvh.ipynb -> bvh_to_sensor.ipynb -> calibrate.ipynb
-
-In order to run `prompt_generation.ipynb`, you must have an OpenAI API key. Create a file called `api_key.txt`, then put your api key within the txt file as shown below(example uses a fake key).
-
-```bash
-api_key=sk-LETcIrgxThV0lSfkLaRBT3BlbkFJMDZoBCPDu4QjCdF
-```
+>Outros arquivos e informações que o repositório precisa ter:
+> - Preencha a descrição do repositóio
+>   - É necessário um _role_ de _admin_ no repositório para alterar sua descrição. Pessoas com [_role_ de _owner_](https://github.com/orgs/H-IAAC/people?query=role%3Aowner) na organização do GitHub podem alterar os papéis por repositório.
+>   - Na página principal do repositório, na coluna direita, clique na engrenagem ao lado de "About"
+>   - É recomendável também adicionar "topics" aos dados do repositório
+> - Um arquivo LICENSE contendo a licença do repositório. Recomendamos a licença [LGPLv3](https://choosealicense.com/licenses/lgpl-3.0/).
+>   - Converse com seu orientador caso acredite que essa licença não seja adequada. 
+> - Um arquivo CFF contendo as informações sobre como citar o repositório.
+>   - Este arquivo é lido automaticamente por ferramentas como o próprio GitHub ou o Zenodo, que geram automaticamente as citações.
+>   - Existem ferramentas para auxiliar a criação do arquivo, como o [CFF Init](https://bit.ly/cffinit).    
+>   - O script `generate_citation.py` pode ser utilizado para preencher o bloco de citação deste README automaticamente:
+>     - ```bash
+>         python -m pip install cffconvert
+>         python generate_citation.py
+>         ```
+>   - Caso o arquivo tenha a tag `doi: <DOI>`, ele será lido automaticamente pelo Index.
+> - Opcionalmente, o repositório pode ser preservado utilizando o Zenodo, que gerará um DOI para ele. [Tutorial](https://help.zenodo.org/docs/github/enable-repository/).
+>   - É necessário um _role_ de _admin_ no repositório para publicar um repositório utilizando o Zenodo. Pessoas com [_role_ de _owner_](https://github.com/orgs/H-IAAC/people?query=role%3Aowner) na organização do GitHub podem alterar os papéis por repositório.
