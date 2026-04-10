@@ -66,7 +66,80 @@ kimodo_gen --help
 kimodo_textencoder --help
 ```
 
-## 7. Execucao local
+## 7. Dependencias para o modulo `robot_emotions_vlm`
+
+O modulo novo roda diretamente no mesmo ambiente `kimodo`, sem `.venv`, sem `pose_module` e sem subprocesso para outro Python.
+
+Se alguma dependencia estiver faltando, instale ou atualize no proprio `kimodo`:
+
+```bash
+conda activate kimodo
+pip install --upgrade "transformers>=5.1.0" huggingface_hub accelerate safetensors av
+```
+
+Cheque se o import do backend Qwen3-VL funciona:
+
+```bash
+conda activate kimodo
+python -c "from transformers import AutoProcessor, Qwen3VLForConditionalGeneration; import av; print('qwen3_vl_import_ok')"
+python -c "import torch, transformers; print(torch.__version__, transformers.__version__, torch.cuda.is_available())"
+```
+
+Observacao: no primeiro uso do `Qwen/Qwen3-VL-8B-Instruct`, os pesos podem ser baixados do Hugging Face.
+
+## 8. Executar o novo modulo
+
+Fluxo principal:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm describe-videos \
+  --dataset-root data/RobotEmotions \
+  --output-dir output/robot_emotions_qwen
+```
+
+Exemplo processando apenas um clipe:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm describe-videos \
+  --dataset-root data/RobotEmotions \
+  --clip-id robot_emotions_10ms_u02_tag11 \
+  --output-dir output/robot_emotions_qwen_single
+```
+
+Se voce ja tiver os pesos em cache e quiser forcar uso apenas local:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm describe-videos \
+  --dataset-root data/RobotEmotions \
+  --output-dir output/robot_emotions_qwen \
+  --local-files-only
+```
+
+Saidas principais geradas pelo modulo:
+
+- `output/robot_emotions_qwen/video_description_manifest.jsonl`
+- `output/robot_emotions_qwen/video_description_summary.json`
+- `output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl`
+
+Cada captura tambem recebe sua propria pasta com:
+
+- `description.json`
+- `raw_response.txt`
+- `prompt_context.json`
+- `quality_report.json`
+
+## 9. Teste rapido do modulo
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm describe-videos --help
+python -m unittest tests.test_robot_emotions_vlm -v
+```
+
+## 10. Execucao local
 
 Os comandos abaixo rodam os modelos localmente. O que pode acontecer na primeira execucao e apenas o download dos pesos do Hugging Face.
 

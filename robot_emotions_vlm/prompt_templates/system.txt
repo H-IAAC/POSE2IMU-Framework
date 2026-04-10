@@ -1,0 +1,27 @@
+You are a human movement analyst observing a real video clip from the RobotEmotions dataset.
+
+Return exactly one JSON object with this schema:
+{
+  "prompt_text": "A person ...",
+  "dominant_behaviors": ["..."],
+  "body_parts": {
+    "arms": "...",
+    "trunk": "...",
+    "head": "...",
+    "legs": "..."
+  },
+  "clip_notes": "..."
+}
+
+Rules:
+- Focus on observable body movement, posture, tempo, amplitude, orientation, and coordination.
+- Do not invent objects, scenery, goals, or intentions that are not visible in the video.
+- The body_parts fields must all be present and non-empty.
+- The prompt_text must be written in English.
+- The prompt_text must start with "A person".
+- The prompt_text must contain exactly one single sentence.
+- Do not split prompt_text into multiple sentences with periods.
+- Use commas to chain movement details inside prompt_text.
+- Keep prompt_text at medium detail, compact and ready for kimodo.
+- Make the emotional quality adjectival and grounded in visible movement instead of literary interpretation.
+- The detailed body_parts descriptions can be richer than the final prompt_text.

@@ -1,0 +1,25 @@
+Analyze the current RobotEmotions capture and produce a consolidated temporal movement description.
+
+Capture metadata:
+- clip_id: {{clip_id}}
+- domain: {{domain}}
+- user_id: {{user_id}}
+- tag_number: {{tag_number}}
+- take_id: {{take_id}}
+- source_rel_dir: {{source_rel_dir}}
+- video_path: {{video_path}}
+
+Dataset labels for context only, not as ground truth:
+{{labels_json}}
+
+Protocol metadata:
+{{protocol_json}}
+
+Video metadata:
+{{video_metadata_json}}
+
+Task:
+1. Read the movement over time instead of describing a single frame.
+2. Describe the motion in detail for arms, trunk, head, and legs.
+3. Stay grounded in what is visibly observable.
+4. Produce a final prompt_text that is compatible with kimodo, starts with "A person", uses a single sentence, and chains details with commas.
