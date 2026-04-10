@@ -131,15 +131,48 @@ Cada captura tambem recebe sua propria pasta com:
 - `prompt_context.json`
 - `quality_report.json`
 
-## 9. Teste rapido do modulo
+## 9. Gerar movimentos no Kimodo a partir do catalogo
+
+Depois que o catalogo textual for gerado pelo Qwen:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm generate-kimodo \
+  --catalog-path output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl \
+  --output-dir output/robot_emotions_kimodo
+```
+
+Exemplo para apenas um clipe:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm generate-kimodo \
+  --catalog-path output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl \
+  --clip-id robot_emotions_10ms_u02_tag11 \
+  --output-dir output/robot_emotions_kimodo_single
+```
+
+Arquivos principais dessa etapa:
+
+- `output/robot_emotions_kimodo/kimodo_generation_manifest.jsonl`
+- `output/robot_emotions_kimodo/kimodo_generation_summary.json`
+
+Cada captura gerada recebe:
+
+- `prompt_entry.json`
+- `generation_config.json`
+- `motion.npz` ou pasta `motion/` para multiplas amostras
+- opcionalmente `motion.bvh`, `motion.csv` ou `motion_amass.npz`, dependendo do modelo Kimodo
+## 10. Teste rapido do modulo
 
 ```bash
 conda activate kimodo
 python -m robot_emotions_vlm describe-videos --help
+python -m robot_emotions_vlm generate-kimodo --help
 python -m unittest tests.test_robot_emotions_vlm -v
 ```
 
-## 10. Execucao local
+## 11. Execucao local
 
 Os comandos abaixo rodam os modelos localmente. O que pode acontecer na primeira execucao e apenas o download dos pesos do Hugging Face.
 
@@ -156,15 +189,7 @@ kimodo_gen "A person sitting, telling a story" \
   --model Kimodo-SMPLX-RP-v1 \
   --duration 10.0 \
   --output output/kimodo/
-
-kimodo_gen "A person is sitting and expressing happiness while recounting something positive, expressive arm gestures, open posture, lively upper-body motion, small weight shifts, as if recalling a personal episode, arm_raise_ratio 0,01 elbow_opening_deg 90 movement_energy 0,99 num_frames 1999 root_speed_mean 0,018 side_symmetry_score 0,89 step_cadence_hz 0,34 trunk_inclination_deg 2,24 vertical_variation_m 0 wrist_amplitude_mean: 0,49" \
-  --model Kimodo-SMPLX-RP-v1 \
-  --duration 10.0 \
-  --output output/kimodo/
 ```
-
-{"prompt_id": "robot_emotions_happiness_sitting_happy_seated_storytelling_10", "prompt_text": "A person is sitting and expressing happiness while recounting something positive, expressive arm gestures, open posture, lively upper-body motion, small weight shifts, as if recalling a personal episode.", "labels": {"emotion": "happiness", "modality": "sitting", "stimulus": "autobiographical_recall"}, "seed": 123, "num_samples": 1, "fps": 20.0, "duration_hint_sec": 8.0, "action_detail": "happy_seated_storytelling", "stimulus_type": "autobiographical_recall", "reference_clip_id": "robot_emotions_10ms_u02_tag10", "source_metadata": {"dataset": "RobotEmotions", "condition_index": 9, "stimulus_details": "Ask the participant to recall a happy episode/funny anecdote", "reference_clip_ids": ["robot_emotions_10ms_u02_tag10", "robot_emotions_10ms_u03_tag10", "robot_emotions_10ms_u05_tag10", "robot_emotions_30ms_u02_tag03", "robot_emotions_30ms_u03_tag03", "robot_emotions_30ms_u04_tag03", "robot_emotions_30ms_u05_tag03_2", "robot_emotions_30ms_u06_tag03", "robot_emotions_30ms_u08_tag03"], "motion_lexicon": {"arm_raise_ratio": 0.013800700862542887, "duration_sec": 99.94999999999999, "elbow_opening_deg": 89.73967615763347, "movement_energy": 0.09012295140160455, "num_frames": 1999.0, "root_speed_mean": 0.017807453146411314, "side_symmetry_score": 0.8874801728460524, "step_cadence_hz": 0.3376583696533339, "trunk_inclination_deg": 2.2415460679266186, "vertical_variation_m": 0.0, "wrist_amplitude_mean": 0.48591100838449264}}}
-
 
 Para forcar uso apenas de cache/arquivos locais:
 

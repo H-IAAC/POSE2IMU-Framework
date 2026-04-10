@@ -16,6 +16,7 @@ from .export import (
     write_json,
     write_root_outputs,
 )
+from .kimodo_generation import generate_kimodo_from_catalog
 from .prompts import (
     DEFAULT_SYSTEM_PROMPT_PATH,
     DEFAULT_USER_PROMPT_PATH,
@@ -231,6 +232,20 @@ def build_parser() -> argparse.ArgumentParser:
     describe_parser.add_argument("--catalog-output-path")
     describe_parser.add_argument("--seed", type=int, default=123)
     describe_parser.add_argument("--num-samples", type=int, default=1)
+
+    generate_parser = subparsers.add_parser("generate-kimodo")
+    generate_parser.add_argument("--catalog-path", required=True)
+    generate_parser.add_argument("--output-dir", default="output/robot_emotions_kimodo")
+    generate_parser.add_argument("--clip-id", action="append", dest="clip_ids")
+    generate_parser.add_argument("--model")
+    generate_parser.add_argument("--duration-sec", type=float, default=5.0)
+    generate_parser.add_argument("--diffusion-steps", type=int, default=100)
+    generate_parser.add_argument("--seed", type=int)
+    generate_parser.add_argument("--num-samples", type=int)
+    generate_parser.add_argument("--no-postprocess", action="store_true")
+    generate_parser.add_argument("--bvh", action="store_true")
+    generate_parser.add_argument("--cfg-type", choices=("nocfg", "regular", "separated"))
+    generate_parser.add_argument("--cfg-weight", type=float, nargs="*")
     return parser
 
 
@@ -240,6 +255,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command != "describe-videos":
+        if args.command == "generate-kimodo":
+            summary = generate_kimodo_from_catalog(
+                catalog_path=args.catalog_path,
+                output_dir=args.output_dir,
+                clip_ids=args.clip_ids,
+                model_name=args.model,
+                duration_sec=args.duration_sec,
+                diffusion_steps=args.diffusion_steps,
+                seed=args.seed,
+                num_samples=args.num_samples,
+                no_postprocess=args.no_postprocess,
+                bvh=args.bvh,
+                cfg_type=args.cfg_type,
+                cfg_weight=args.cfg_weight,
+            )
+            print(json.dumps(summary, indent=2, ensure_ascii=True))
+            return 0
         parser.print_help()
         return 1
 

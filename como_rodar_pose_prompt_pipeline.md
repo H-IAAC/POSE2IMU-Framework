@@ -196,8 +196,8 @@ Esse é o segundo passo do ramo por prompt da fase 1.
 ```bash
 .venv/bin/python -m pose_module.robot_emotions \
   export-prompt-pose3d \
-  --prompt-catalog data/prompts/robot_emotions_prompts.jsonl \
-  --output-dir output/robot_emotions_virtual_imu_v2_all_dataset/virtual_pose3d
+  --prompt-catalog output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl \
+  --output-dir output/robot_emotions_t2mgpt
 ```
 
 Para desabilitar o BVH opcional:

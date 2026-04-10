@@ -54,6 +54,25 @@ python -m robot_emotions_vlm describe-videos \
   --local-files-only
 ```
 
+Generate Kimodo motions for all catalog entries:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm generate-kimodo \
+  --catalog-path output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl \
+  --output-dir output/robot_emotions_kimodo
+```
+
+Generate only selected clips from the catalog:
+
+```bash
+conda activate kimodo
+python -m robot_emotions_vlm generate-kimodo \
+  --catalog-path output/robot_emotions_qwen/kimodo_prompt_catalog.jsonl \
+  --clip-id robot_emotions_10ms_u02_tag11 \
+  --output-dir output/robot_emotions_kimodo_single
+```
+
 ## Main options
 
 - `--model-id`: defaults to `Qwen/Qwen3-VL-8B-Instruct`
@@ -64,6 +83,9 @@ python -m robot_emotions_vlm describe-videos \
 - `--system-prompt-path`: override the system prompt template
 - `--user-prompt-path`: override the user prompt template
 - `--catalog-output-path`: write the Kimodo catalog to a custom path
+- `generate-kimodo --duration-sec`: fallback duration when the catalog has no `duration_hint_sec`
+- `generate-kimodo --model`: choose the Kimodo model to run
+- `generate-kimodo --bvh`: also export BVH for SOMA models
 
 ## Outputs
 
@@ -72,6 +94,8 @@ Root files:
 - `video_description_manifest.jsonl`
 - `video_description_summary.json`
 - `kimodo_prompt_catalog.jsonl`
+- `kimodo_generation_manifest.jsonl`
+- `kimodo_generation_summary.json`
 
 Per-clip files:
 
@@ -79,6 +103,13 @@ Per-clip files:
 - `raw_response.txt`
 - `prompt_context.json`
 - `quality_report.json`
+
+Per-generated clip:
+
+- `prompt_entry.json`
+- `generation_config.json`
+- `motion.npz` or a `motion/` folder for multiple samples
+- optional `motion.bvh`, `motion.csv`, or `motion_amass.npz` depending on the Kimodo model and flags
 
 ## Notes
 
