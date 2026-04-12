@@ -63,6 +63,8 @@ python -m robot_emotions_vlm generate-kimodo \
   --output-dir output/robot_emotions_kimodo
 ```
 
+By default, `generate-kimodo` uses `Kimodo-SMPLX-RP-v1` so that an AMASS file is exported next to each generated NPZ.
+
 Generate only selected clips from the catalog:
 
 ```bash
@@ -84,7 +86,7 @@ python -m robot_emotions_vlm generate-kimodo \
 - `--user-prompt-path`: override the user prompt template
 - `--catalog-output-path`: write the Kimodo catalog to a custom path
 - `generate-kimodo --duration-sec`: fallback duration when the catalog has no `duration_hint_sec`
-- `generate-kimodo --model`: choose the Kimodo model to run
+- `generate-kimodo --model`: choose the Kimodo model to run; default is `Kimodo-SMPLX-RP-v1`
 - `generate-kimodo --bvh`: also export BVH for SOMA models
 
 ## Outputs
@@ -109,7 +111,8 @@ Per-generated clip:
 - `prompt_entry.json`
 - `generation_config.json`
 - `motion.npz` or a `motion/` folder for multiple samples
-- optional `motion.bvh`, `motion.csv`, or `motion_amass.npz` depending on the Kimodo model and flags
+- `motion_amass.npz` next to each NPZ when using the SMPL-X model
+- optional `motion.bvh` or `motion.csv` depending on the Kimodo model and flags
 
 ## Notes
 

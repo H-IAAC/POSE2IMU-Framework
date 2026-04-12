@@ -11,6 +11,8 @@ from typing import Any, Sequence
 
 from .export import write_json, write_jsonl
 
+DEFAULT_KIMODO_GENERATION_MODEL = "Kimodo-SMPLX-RP-v1"
+
 
 @dataclass(frozen=True)
 class CatalogPromptEntry:
@@ -35,7 +37,7 @@ class CatalogPromptEntry:
 class KimodoGenerationConfig:
     """Runtime settings for catalog-driven Kimodo generation."""
 
-    model_name: str | None = None
+    model_name: str | None = DEFAULT_KIMODO_GENERATION_MODEL
     duration_sec: float = 5.0
     diffusion_steps: int = 100
     seed: int | None = None
@@ -114,7 +116,7 @@ def generate_kimodo_from_catalog(
     catalog_path: str | Path,
     output_dir: str | Path,
     clip_ids: Sequence[str] | None = None,
-    model_name: str | None = None,
+    model_name: str | None = DEFAULT_KIMODO_GENERATION_MODEL,
     duration_sec: float = 5.0,
     diffusion_steps: int = 100,
     seed: int | None = None,
@@ -361,7 +363,7 @@ class _KimodoRuntime:
             self.save_kimodo_npz(str(npz_path), single)
             artifacts["kimodo_npz_path"] = str(npz_path.resolve())
 
-            if resolved_model == "kimodo-smplx-rp":
+            if _is_smplx_model(resolved_model):
                 artifacts["amass_npz_path"] = _save_smplx_amass_outputs(
                     output=output,
                     output_path=npz_path,
@@ -369,7 +371,7 @@ class _KimodoRuntime:
                     fps=fps,
                 )
 
-            if resolved_model == "kimodo-g1-rp":
+            if _is_g1_model(resolved_model):
                 from kimodo.exports.mujoco import MujocoQposConverter
 
                 csv_path = output_stem.with_suffix(".csv")
@@ -399,7 +401,7 @@ class _KimodoRuntime:
                 npz_paths.append(str(sample_npz_path.resolve()))
             artifacts["kimodo_npz_paths"] = npz_paths
 
-            if resolved_model == "kimodo-g1-rp":
+            if _is_g1_model(resolved_model):
                 from kimodo.exports.mujoco import MujocoQposConverter
 
                 converter = MujocoQposConverter(skeleton)
@@ -408,7 +410,7 @@ class _KimodoRuntime:
                 converter.save_csv(qpos, str(csv_path))
                 artifacts["g1_csv_path"] = str(csv_path.resolve())
 
-            if resolved_model == "kimodo-smplx-rp":
+            if _is_smplx_model(resolved_model):
                 amass_paths: list[str] = []
                 for sample_index, sample_npz_path in enumerate(npz_paths):
                     sample_output = _slice_output_sample(output, sample_index, n_samples)
@@ -451,6 +453,14 @@ def _slice_output_sample(output: dict[str, Any], sample_index: int, n_samples: i
         )
         for key, value in output.items()
     }
+
+
+def _is_smplx_model(model_name: str) -> bool:
+    return "smplx" in str(model_name).lower()
+
+
+def _is_g1_model(model_name: str) -> bool:
+    return "g1" in str(model_name).lower()
 
 
 def _save_smplx_amass_outputs(

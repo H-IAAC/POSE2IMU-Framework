@@ -17,6 +17,7 @@ from .export import (
     write_root_outputs,
 )
 from .kimodo_generation import generate_kimodo_from_catalog
+from .kimodo_generation import DEFAULT_KIMODO_GENERATION_MODEL
 from .prompts import (
     DEFAULT_SYSTEM_PROMPT_PATH,
     DEFAULT_USER_PROMPT_PATH,
@@ -237,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--catalog-path", required=True)
     generate_parser.add_argument("--output-dir", default="output/robot_emotions_kimodo")
     generate_parser.add_argument("--clip-id", action="append", dest="clip_ids")
-    generate_parser.add_argument("--model")
+    generate_parser.add_argument("--model", default=DEFAULT_KIMODO_GENERATION_MODEL)
     generate_parser.add_argument("--duration-sec", type=float, default=5.0)
     generate_parser.add_argument("--diffusion-steps", type=int, default=100)
     generate_parser.add_argument("--seed", type=int)
