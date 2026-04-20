@@ -1,2 +1,3 @@
-Classificador top 1 3 5
-Backend embedder kimodo compartilhado
+Classificador top 1 2 3
+
+rotação skeleton imugpt22 -> kimodo smplx

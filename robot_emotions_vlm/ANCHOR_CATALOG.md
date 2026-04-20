@@ -99,7 +99,7 @@ python -m robot_emotions_vlm build-anchor-catalog \
   --qwen-window-catalog-path output/robot_emotions_qwen_windows/kimodo_window_prompt_catalog.jsonl \
   --output-dir output/robot_emotions_kimodo_anchors_hands \
   --model Kimodo-SMPLX-RP-v1 \
-  --hand-keyframes 4
+  --hand-keyframes 3
 ```
 
 O `constraints.json` resultante salva:
@@ -111,8 +111,8 @@ O `constraints.json` resultante salva:
 
 ```bash
 python -m robot_emotions_vlm generate-kimodo \
-  --catalog-path output/robot_emotions_kimodo_anchors/kimodo_anchor_catalog.jsonl \
-  --output-dir output/robot_emotions_kimodo_generated
+  --catalog-path output/robot_emotions_kimodo_anchors_hands/kimodo_anchor_catalog.jsonl \
+  --output-dir output/robot_emotions_kimodo_generated_hands_all
 ```
 
 Para iterar em uma janela especifica:
