@@ -67,58 +67,167 @@ def resolve_capture_metadata(domain: str, user_id: int, tag_number: int) -> dict
 		"protocol_tag_30ms": None if protocol_info is None else protocol_info.get("tag_30ms"),
 	}
 
+def _extract_virtual_npz_path(entry: dict[str, Any]) -> str | None:
+	artifacts = dict(entry.get("artifacts", {}))
+	if artifacts.get("virtual_imu_npz_path") not in (None, ""):
+		return str(artifacts.get("virtual_imu_npz_path"))
+
+	virtual_imu_artifacts = dict(entry.get("virtual_imu_artifacts", {}))
+	if virtual_imu_artifacts.get("virtual_imu_npz_path") not in (None, ""):
+		return str(virtual_imu_artifacts.get("virtual_imu_npz_path"))
+
+	return None
+
+def _extract_real_npz_path(entry: dict[str, Any]) -> str | None:
+	input_artifacts = dict(entry.get("input_artifacts", {}))
+	if input_artifacts.get("imu_npz_path") not in (None, ""):
+		return str(input_artifacts.get("imu_npz_path"))
+
+	artifacts = dict(entry.get("artifacts", {}))
+	if artifacts.get("imu_npz_path") not in (None, ""):
+		return str(artifacts.get("imu_npz_path"))
+
+	return None
+
+def _parse_clip_identity(*values: Any) -> tuple[str, int, int] | None:
+	for value in values:
+		if value in (None, ""):
+			continue
+		match = re.search(r"robot_emotions_(\d+ms)_u(\d+)_tag(\d+)", str(value))
+		if match is not None:
+			domain = str(match.group(1))
+			user_id = int(match.group(2))
+			tag_number = int(match.group(3))
+			return domain, user_id, tag_number
+	return None
+
+def _find_real_capture_dir_from_outputs(output_root: Path, domain: str, user_id: int, clip_id: str) -> Path | None:
+	output_dir = None
+	resolved_root = Path(output_root).resolve()
+	for candidate in [resolved_root, *resolved_root.parents]:
+		if candidate.is_dir() and candidate.name == "output":
+			output_dir = candidate
+			break
+		candidate_output = candidate / "output"
+		if candidate_output.exists() and candidate_output.is_dir():
+			output_dir = candidate_output
+			break
+
+	if output_dir is None:
+		return None
+
+	if not output_dir.exists():
+		return None
+
+	user_folder = f"user_{int(user_id):02d}"
+	for child in sorted(output_dir.iterdir()):
+		if not child.is_dir() or child.name.startswith("exp_"):
+			continue
+		candidate_dir = child / str(domain) / user_folder / str(clip_id)
+		candidate_imu = candidate_dir / "imu.npz"
+		candidate_metadata = candidate_dir / "metadata.json"
+		if candidate_imu.exists() and candidate_metadata.exists():
+			return candidate_dir
+
+	return None
+
+def _resolve_manifest_context(path: Path) -> tuple[Path | None, Path | None]:
+	resolved_path = Path(path).resolve()
+	manifest_local = resolved_path / "virtual_imu_manifest.jsonl"
+	if manifest_local.exists():
+		return resolved_path, None
+
+	selected_virtual_npz: Path | None = None
+	if resolved_path.is_dir():
+		candidate_virtual = resolved_path / "virtual_imu" / "virtual_imu.npz"
+		if candidate_virtual.exists():
+			selected_virtual_npz = candidate_virtual.resolve()
+
+	for parent in [resolved_path, *resolved_path.parents]:
+		manifest_path = parent / "virtual_imu_manifest.jsonl"
+		if manifest_path.exists():
+			return parent.resolve(), selected_virtual_npz
+
+	return None, selected_virtual_npz
+
 def build_exported_capture_table(output_root: Path | str) -> pd.DataFrame:
 	"""Builds capture catalog from `virtual_imu_manifest.jsonl` entries."""
 	configure_capture_table_display()
-	output_root = Path(output_root)
+	requested_output_root = Path(output_root).resolve()
+	manifest_root, selected_virtual_npz = _resolve_manifest_context(requested_output_root)
 	rows = []
 	seen_clip_ids: set[str] = set()
 
-	manifest_path = output_root / "virtual_imu_manifest.jsonl"
-	if not manifest_path.exists():
-		raise RuntimeError(f"Manifest file not found at expected location: {manifest_path}.")
+	if manifest_root is not None:
+		manifest_path = manifest_root / "virtual_imu_manifest.jsonl"
+		with manifest_path.open("r", encoding="utf-8") as handle:
+			for raw_line in handle:
+				line = raw_line.strip()
+				if not line:
+					continue
+				entry = json.loads(line)
 
-	with manifest_path.open("r", encoding="utf-8") as handle:
-		for raw_line in handle:
-			line = raw_line.strip()
-			if not line:
-				continue
-			entry = json.loads(line)
+				virtual_npz_path = _extract_virtual_npz_path(entry)
+				if virtual_npz_path in (None, ""):
+					continue
+				virtual_npz = Path(str(virtual_npz_path)).resolve()
+				if not virtual_npz.exists():
+					continue
+				if selected_virtual_npz is not None and virtual_npz != selected_virtual_npz:
+					continue
 
-			input_artifacts = dict(entry.get("input_artifacts", {}))
-			artifacts = dict(entry.get("artifacts", {}))
+				reference_clip_id = str(entry.get("reference_clip_id") or entry.get("clip_id") or "")
+				clip_id = str(entry.get("window_id") or entry.get("prompt_id") or entry.get("clip_id") or "")
+				if not clip_id:
+					continue
 
-			real_npz_path = input_artifacts.get("imu_npz_path")
-			virtual_npz_path = artifacts.get("virtual_imu_npz_path")
+				identity = _parse_clip_identity(
+					entry.get("domain"),
+					entry.get("clip_id"),
+					entry.get("reference_clip_id"),
+					entry.get("window_id"),
+					entry.get("prompt_id"),
+				)
+				if identity is None:
+					continue
+				domain, user_id, tag_number = identity
 
-			if real_npz_path in (None, "") or virtual_npz_path in (None, ""):
-				continue
+				real_npz_path = _extract_real_npz_path(entry)
+				real_npz: Path | None = None
+				if real_npz_path not in (None, ""):
+					real_candidate = Path(str(real_npz_path)).resolve()
+					if real_candidate.exists():
+						real_npz = real_candidate
 
-			real_npz = Path(str(real_npz_path))
-			virtual_npz = Path(str(virtual_npz_path))
-			if not real_npz.exists() or not virtual_npz.exists():
-				continue
+				if real_npz is None and reference_clip_id:
+					real_capture_dir = _find_real_capture_dir_from_outputs(
+						output_root=requested_output_root,
+						domain=domain,
+						user_id=user_id,
+						clip_id=reference_clip_id,
+					)
+					if real_capture_dir is not None:
+						real_npz = (real_capture_dir / "imu.npz").resolve()
 
-			domain = str(entry.get("domain"))
-			user_id = int(entry.get("user_id"))
-			tag_number = int(entry.get("tag_number"))
-			clip_id = str(entry.get("clip_id"))
-			capture_metadata = resolve_capture_metadata(domain=domain, user_id=user_id, tag_number=tag_number)
-			rows.append(
-				{
-					"clip_id": clip_id,
-					"domain": domain,
-					"user_id": user_id,
-					"tag_number": tag_number,
-					"take_id": normalize_take_id(entry.get("take_id"), clip_id=clip_id),
-					"clip_dir": str(real_npz.parent.resolve()),
-					"pose_dir": str(virtual_npz.parent.resolve()),
-					**capture_metadata,
-				}
-			)
-			seen_clip_ids.add(clip_id)
+				if real_npz is None or not real_npz.exists():
+					continue
 
-	for metadata_path in sorted(output_root.rglob("metadata.json")):
+				capture_metadata = resolve_capture_metadata(domain=domain, user_id=user_id, tag_number=tag_number)
+				rows.append(
+					{
+						"clip_id": clip_id,
+						"domain": domain,
+						"user_id": user_id,
+						"tag_number": tag_number,
+						"take_id": normalize_take_id(entry.get("take_id"), clip_id=clip_id),
+						"clip_dir": str(real_npz.parent.resolve()),
+						"pose_dir": str(virtual_npz.parent.resolve()),
+						**capture_metadata,
+					}
+				)
+				seen_clip_ids.add(clip_id)
+
+	for metadata_path in sorted(requested_output_root.rglob("metadata.json")):
 		try:
 			metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 		except Exception:
@@ -159,7 +268,7 @@ def build_exported_capture_table(output_root: Path | str) -> pd.DataFrame:
 
 	frame = pd.DataFrame(rows)
 	if frame.empty:
-		raise RuntimeError(f"No capture ready to plot found at {output_root}.")
+		raise RuntimeError(f"No capture ready to plot found at {requested_output_root}.")
 
 	return frame.sort_values(["domain", "user_id", "tag_number", "take_id", "clip_id"], kind="stable").reset_index(drop=True)
 

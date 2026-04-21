@@ -307,6 +307,20 @@ def _select_sensor_block(
     return np.asarray(values[:, indices, :], dtype=np.float32)
 
 
+def _trim_real_capture(real_capture: dict[str, Any], time_range_sec: tuple[float, float]) -> dict[str, Any]:
+    ts = real_capture["timestamps_sec"]
+    t0, t1 = float(time_range_sec[0]), float(time_range_sec[1])
+    mask = (ts >= t0) & (ts <= t1)
+    if not mask.any():
+        return real_capture
+    ts_trimmed = ts[mask]
+    return {
+        **real_capture,
+        "timestamps_sec": ts_trimmed - ts_trimmed[0],
+        "imu": real_capture["imu"][mask],
+    }
+
+
 def load_capture_modalities(
     capture_row: pd.Series | dict[str, Any],
     *,
@@ -315,6 +329,9 @@ def load_capture_modalities(
     row = pd.Series(capture_row)
     pose_sequence = load_pose_sequence3d(str(row["pose3d_npz_path"]))
     real_capture = load_real_capture(row["clip_dir"])
+    time_range = row.get("real_imu_time_range_sec")
+    if time_range is not None:
+        real_capture = _trim_real_capture(real_capture, time_range)
     synthetic_capture = _load_virtual_capture_from_path(
         _resolve_synthetic_npz_path(row, synthetic_variant=synthetic_variant)
     )
@@ -572,7 +589,10 @@ def build_windowed_multimodal_dataset(
     imu_feature_mode: str | None = None
 
     for _, capture_row in capture_table.iterrows():
-        prepared = prepare_capture_windows(capture_row, config=resolved_config)
+        try:
+            prepared = prepare_capture_windows(capture_row, config=resolved_config)
+        except ValueError:
+            continue
         if prepared["metadata"].empty:
             continue
         metadata_blocks.append(prepared["metadata"])
