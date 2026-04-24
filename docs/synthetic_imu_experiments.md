@@ -41,21 +41,51 @@ Requer um manifesto de geração Kimodo (saída de `generate-kimodo`).
 
 ```bash
 python -m robot_emotions_vlm export-kimodo-virtual-imu \
-  --kimodo-manifest output/robot_emotions_kimodo_generated_hands_all/kimodo_generation_manifest.jsonl \
-  --output-dir output/exp_synthetic_pose
+  --kimodo-manifest output/robot_emotions_kimodo_generated_single_5/kimodo_generation_manifest.jsonl \
+  --output-dir output/exp_synthetic_pose_5
 ```
 
 Produz `output/exp_synthetic/virtual_imu_manifest.jsonl`.
 
+**Recomendado:** use `--real-imu-root` para aplicar os mesmos alinhamento geométrico e
+calibração por percentil do ramo real. Sem isso, o IMU sintético fica no frame do SMPL-X
+(gravity em Y), enquanto o sensor físico tem montagem com inclinação diferente — gerando
+offsets DC grotescos na comparação direta.
+
+```bash
+python -m robot_emotions_vlm export-kimodo-virtual-imu \
+  --kimodo-manifest output/robot_emotions_kimodo_generated_5/kimodo_generation_manifest.jsonl \
+  --output-dir output/exp_synthetic_pose \
+  --real-imu-root output/exp_real_pose \
+  --real-imu-signal-mode acc \
+  --real-imu-label-key emotion
+```
+
 Opções úteis:
 
 ```
---clip-id CLIP_ID          Processar apenas um clipe específico
---export-bvh               Exportar também pose3d.bvh
---no-skip-existing         Reprocessar mesmo se virtual_imu.npz já existir
---imu-acc-noise-std-m-s2 N Ruído gaussiano no acelerômetro (m/s²)
---imu-gyro-noise-std-rad-s N Ruído gaussiano no giroscópio (rad/s)
---imu-random-seed N        Semente para ruído
+--real-imu-root DIR              Raiz do IMU real; ativa alinhamento + calibração por clipe
+--real-imu-signal-mode acc|gyro|both  Sinal calibrado (padrão: acc)
+--real-imu-percentile-resolution N    Bins de percentil (padrão: 100)
+--no-real-imu-per-class-calibration   Usa distribuição global em vez de por classe
+--real-imu-label-key FIELD            Campo para calibração por classe (ex: emotion)
+--clip-id CLIP_ID                Processar apenas um clipe específico
+--export-bvh                     Exportar também pose3d.bvh
+--no-skip-existing               Reprocessar mesmo se virtual_imu.npz já existir
+--imu-acc-noise-std-m-s2 N       Ruído gaussiano no acelerômetro (m/s²)
+--imu-gyro-noise-std-rad-s N     Ruído gaussiano no giroscópio (rad/s)
+--imu-random-seed N              Semente para ruído
+```
+
+Artefatos adicionais por clipe quando `--real-imu-root` é usado:
+
+```
+virtual_imu/
+├── virtual_imu.npz                         # sinal final alinhado + calibrado
+├── virtual_imu_geometric_aligned.npz       # após alinhamento, antes da calibração
+├── imu_alignment_transforms.json
+├── imu_alignment_metrics.json
+└── virtual_imu_calibration_report.json
 ```
 
 ---
@@ -69,13 +99,6 @@ Requer os dois manifestos já gerados pelos modos 1 e 2.
 ```bash
 python -m robot_emotions_vlm export-mixed-virtual-imu \
   --real-manifest      output/exp_real_pose/virtual_imu_manifest.jsonl \
-  --synthetic-manifest output/exp_synthetic_pose/virtual_imu_manifest.jsonl \
-  --output-dir         output/exp_mixed_pose
-```
-
-```bash
-python -m robot_emotions_vlm export-mixed-virtual-imu \
-  --real-manifest      output/robot_emotions_virtual_imu_v2_all_dataset/virtual_imu_manifest.jsonl \
   --synthetic-manifest output/exp_synthetic_pose/virtual_imu_manifest.jsonl \
   --output-dir         output/exp_mixed_pose
 ```

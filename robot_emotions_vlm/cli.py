@@ -30,6 +30,24 @@ from .schemas import DescriptionValidationError, VideoDescription, parse_model_r
 from .window_descriptions import describe_windows
 
 
+def _resolve_real_imu_npz(
+    reference_clip_id: str,
+    real_imu_root: str | Path,
+) -> Path | None:
+    """Resolve imu.npz path for a reference clip given the real IMU root.
+
+    Expects the layout: <real_imu_root>/<domain>/user_<NN>/<clip_id>/imu.npz
+    where clip_id encodes domain and user_id as robot_emotions_<domain>_u<NN>_tag<NN>.
+    """
+    import re
+    m = re.match(r"robot_emotions_(.+)_u(\d+)_tag\d+", reference_clip_id)
+    if m is None:
+        return None
+    domain, user_id_str = m.group(1), m.group(2)
+    candidate = Path(real_imu_root) / domain / f"user_{int(user_id_str):02d}" / reference_clip_id / "imu.npz"
+    return candidate if candidate.exists() else None
+
+
 def export_kimodo_virtual_imu(
     *,
     kimodo_manifest_path: str | Path,
@@ -41,14 +59,26 @@ def export_kimodo_virtual_imu(
     export_bvh: bool = False,
     skip_existing: bool = True,
     clip_ids: Sequence[str] | None = None,
+    real_imu_root: str | Path | None = None,
+    real_imu_signal_mode: str = "acc",
+    real_imu_percentile_resolution: int = 100,
+    real_imu_per_class_calibration: bool = True,
+    real_imu_label_key: str | None = None,
 ) -> dict[str, Any]:
     """Batch-process a Kimodo generation manifest → virtual IMU.
 
     Reads a JSONL manifest produced by generate-kimodo (or batch_kimodo_pose3d),
     runs metric normalisation + root estimation + IK + IMUSim on each ok entry,
     and writes a virtual_imu_manifest.jsonl alongside a summary.
+
+    When real_imu_root is provided, applies the same geometric alignment and
+    percentile calibration used by the real-video pipeline, using the imu.npz
+    of each entry's reference_clip_id as the per-clip reference signal.
     """
+    import numpy as np
     from pose_module.pipeline import run_virtual_imu_from_kimodo
+    from pose_module.imu_alignment import run_geometric_alignment
+    from pose_module.processing.imu_calibration import calibrate_virtual_imu_sequence
 
     manifest_path = Path(kimodo_manifest_path)
     output_root = Path(output_dir)
@@ -99,7 +129,55 @@ def export_kimodo_virtual_imu(
                 imu_gyro_noise_std_rad_s=imu_gyro_noise_std_rad_s,
                 imu_random_seed=int(imu_random_seed),
             )
+
             virtual_imu_seq = result["virtual_imu_sequence"]
+            artifacts = dict(result["artifacts"])
+
+            reference_clip_id = entry.get("reference_clip_id") or ""
+            real_imu_npz = (
+                _resolve_real_imu_npz(reference_clip_id, real_imu_root)
+                if real_imu_root not in (None, "")
+                else None
+            )
+
+            if real_imu_npz is not None:
+                virtual_imu_output_dir = clip_output_dir / "virtual_imu"
+                virtual_imu_output_dir.mkdir(parents=True, exist_ok=True)
+
+                alignment_result = run_geometric_alignment(
+                    virtual_imu_seq,
+                    output_dir=virtual_imu_output_dir,
+                    real_imu_npz_path=real_imu_npz,
+                    capture_id=clip_id,
+                )
+                virtual_imu_seq = alignment_result["aligned_virtual_imu_sequence"]
+                artifacts.update(alignment_result["artifacts"])
+
+                activity_label = None
+                if real_imu_label_key not in (None, ""):
+                    activity_label = entry.get("labels", {}).get(str(real_imu_label_key))
+
+                calibration_result = calibrate_virtual_imu_sequence(
+                    virtual_imu_seq,
+                    real_imu_reference_path=str(real_imu_npz),
+                    activity_label=activity_label,
+                    signal_mode=str(real_imu_signal_mode),
+                    percentile_resolution=int(real_imu_percentile_resolution),
+                    per_class=bool(real_imu_per_class_calibration),
+                )
+                virtual_imu_seq = calibration_result["virtual_imu_sequence"]
+
+                final_virtual_path = virtual_imu_output_dir / "virtual_imu.npz"
+                np.savez_compressed(final_virtual_path, **virtual_imu_seq.to_npz_payload())
+                artifacts["virtual_imu_npz_path"] = str(final_virtual_path.resolve())
+
+                calibration_report = calibration_result["calibration_report"]
+                if calibration_report:
+                    from pose_module.io.cache import write_json_file
+                    cal_path = virtual_imu_output_dir / "virtual_imu_calibration_report.json"
+                    write_json_file(calibration_report, cal_path)
+                    artifacts["virtual_imu_calibration_report_json_path"] = str(cal_path.resolve())
+
             result_entries.append({
                 **entry,
                 "pose_kind": "synthetic",
@@ -110,7 +188,7 @@ def export_kimodo_virtual_imu(
                     "sensor_names": list(virtual_imu_seq.sensor_names),
                     "source": str(virtual_imu_seq.source),
                 },
-                "virtual_imu_artifacts": result["artifacts"],
+                "virtual_imu_artifacts": artifacts,
             })
             num_ok += 1
         except Exception as exc:
@@ -472,11 +550,12 @@ def build_parser() -> argparse.ArgumentParser:
     anchor_parser.add_argument("--model", default=DEFAULT_KIMODO_GENERATION_MODEL)
     anchor_parser.add_argument("--clip-id", action="append", dest="clip_ids")
     anchor_parser.add_argument(
-        "--hand-keyframes",
+        "--effector-keyframes",
         type=int,
         default=0,
         help=(
-            "Number of sparse keyframes for left-hand and right-hand end-effector constraints. "
+            "Number of sparse keyframes for end-effector constraints "
+            "(left-hand, right-hand, left-foot, right-foot). "
             "0 (default) = root2d only.  Requires the kimodo conda environment."
         ),
     )
@@ -509,6 +588,30 @@ def build_parser() -> argparse.ArgumentParser:
     kimodo_imu_parser.add_argument(
         "--no-skip-existing", action="store_true",
         help="Reprocess clips even if virtual_imu.npz already exists.",
+    )
+    kimodo_imu_parser.add_argument(
+        "--real-imu-root", default=None,
+        help=(
+            "Root directory of the real IMU data. When provided, applies geometric "
+            "alignment and percentile calibration using the reference clip's imu.npz. "
+            "Expected layout: <real-imu-root>/<domain>/user_<NN>/<clip_id>/imu.npz"
+        ),
+    )
+    kimodo_imu_parser.add_argument(
+        "--real-imu-signal-mode", default="acc", choices=["acc", "gyro", "both"],
+        help="Which signal to calibrate against the real IMU reference.",
+    )
+    kimodo_imu_parser.add_argument(
+        "--real-imu-percentile-resolution", type=int, default=100,
+        help="Number of percentile bins for rank-mapping calibration.",
+    )
+    kimodo_imu_parser.add_argument(
+        "--no-real-imu-per-class-calibration", action="store_true",
+        help="Disable per-class calibration (use full reference distribution).",
+    )
+    kimodo_imu_parser.add_argument(
+        "--real-imu-label-key", default=None,
+        help="Label field from the entry (e.g. 'emotion') used for per-class calibration.",
     )
 
     mixed_parser = subparsers.add_parser(
@@ -591,7 +694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 model_name=args.model,
                 clip_ids=args.clip_ids,
-                hand_keyframes=args.hand_keyframes,
+                effector_keyframes=args.effector_keyframes,
             )
             print(json.dumps(summary, indent=2, ensure_ascii=True))
             return 0
@@ -606,6 +709,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 export_bvh=bool(args.export_bvh),
                 skip_existing=not bool(args.no_skip_existing),
                 clip_ids=args.clip_ids,
+                real_imu_root=args.real_imu_root or None,
+                real_imu_signal_mode=args.real_imu_signal_mode,
+                real_imu_percentile_resolution=args.real_imu_percentile_resolution,
+                real_imu_per_class_calibration=not bool(args.no_real_imu_per_class_calibration),
+                real_imu_label_key=args.real_imu_label_key or None,
             )
             print(json.dumps(summary, indent=2, ensure_ascii=True))
             return 0

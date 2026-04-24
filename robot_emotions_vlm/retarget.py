@@ -1,18 +1,17 @@
-"""Retarget IMUGPT22 joint positions to the SMPLX22 bone-length space.
+"""Retarget IMUGPT22 joint positions to SMPLX22-compatible space for Kimodo.
 
-The IMUGPT22 and SMPLX22 skeletons share identical topology (same 22 joints,
-same parent indices, same joint order).  The only difference is bone lengths:
-MotionBERT produces positions scaled to the subject's actual body, while the
-Kimodo SMPLX22 neutral skeleton has fixed canonical bone lengths.
+IMUGPT22 and SMPLX22 share identical 22-joint topology and parent indices.
+Two corrections are needed before passing positions to Kimodo:
 
-Passing raw IMUGPT positions to Kimodo's _estimate_global_rotations_from_positions
-causes ~180-degree errors on the pelvis because the pelvis→hip bone points in
-opposite Y directions between the two rest poses.
+1. Bone-length rescaling: MotionBERT produces positions scaled to the subject's
+   actual body; Kimodo's SMPLX22 neutral skeleton has fixed canonical lengths.
 
-The fix is a single pass that rescales each bone in the observed skeleton to
-match the corresponding bone length in the SMPLX22 neutral pose, preserving
-direction.  After rescaling every bone length matches the SMPLX22 rest pose,
-so the SVD-based retarget produces correct rotations.
+2. Hip bone direction inversion: in IMUGPT22 the pelvis→hip vector points +Y
+   (hips above pelvis in the pipeline restpose); in SMPLX22 it points −Y.
+   Passing raw IMUGPT hip positions to _estimate_global_rotations_from_positions
+   causes a ~180° rotation error on both hips, making the person appear seated.
+
+``positions_imugpt22_to_smplx22_space`` applies both corrections in one pass.
 """
 
 from __future__ import annotations
@@ -22,16 +21,22 @@ from pathlib import Path
 
 import numpy as np
 
-# SMPLX22 neutral bone lengths are loaded once and cached.
-_SMPLX22_ASSETS_PATH = Path(__file__).resolve().parents[1] / "kimodo" / "kimodo" / "assets" / "skeletons" / "smplx22" / "joints.p"
+_SMPLX22_ASSETS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "kimodo" / "kimodo" / "assets" / "skeletons" / "smplx22" / "joints.p"
+)
 
-# Canonical parent indices for SMPLX22 / IMUGPT22 (identical topology).
+# Canonical parent indices for both IMUGPT22 and SMPLX22 (identical topology).
 _PARENTS: tuple[int, ...] = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19)
+
+# Joints whose bone direction is inverted between IMUGPT22 and SMPLX22.
+# pelvis→hip points +Y in IMUGPT22 and −Y in SMPLX22.
+_INVERTED_BONE_JOINTS: frozenset[int] = frozenset({1, 2})  # L_Hip, R_Hip
 
 
 @lru_cache(maxsize=1)
 def _load_smplx22_neutral() -> np.ndarray:
-    """Load and cache the SMPLX22 neutral joint positions, shape (22, 3), pelvis-centered."""
+    """Load and cache SMPLX22 neutral joint positions, shape (22, 3), pelvis-centred."""
     if not _SMPLX22_ASSETS_PATH.exists():
         raise FileNotFoundError(
             f"SMPLX22 neutral joints not found at {_SMPLX22_ASSETS_PATH}. "
@@ -40,167 +45,86 @@ def _load_smplx22_neutral() -> np.ndarray:
     import torch
     neutral = torch.load(str(_SMPLX22_ASSETS_PATH), map_location="cpu", weights_only=False)
     neutral = np.asarray(neutral, dtype=np.float64)
-    neutral = neutral - neutral[0]  # pelvis-center
+    neutral -= neutral[0]
     return neutral.astype(np.float32, copy=False)
 
 
-def _compute_bone_lengths(neutral: np.ndarray, parents: tuple[int, ...]) -> np.ndarray:
-    """Return canonical SMPLX22 bone lengths, shape (22,).  Root bone length is 0."""
-    lengths = np.zeros(len(parents), dtype=np.float32)
-    for i, p in enumerate(parents):
+@lru_cache(maxsize=1)
+def _smplx22_bone_lengths() -> np.ndarray:
+    """Return canonical SMPLX22 bone lengths, shape (22,). Root bone length is 0."""
+    neutral = _load_smplx22_neutral()
+    lengths = np.zeros(22, dtype=np.float32)
+    for i, p in enumerate(_PARENTS):
         if p >= 0:
             lengths[i] = float(np.linalg.norm(neutral[i] - neutral[p]))
     return lengths
 
 
-@lru_cache(maxsize=1)
-def _smplx22_bone_lengths() -> np.ndarray:
-    return _compute_bone_lengths(_load_smplx22_neutral(), _PARENTS)
-
-
-def rescale_positions_to_smplx22(
-    positions: np.ndarray,
-    parents: tuple[int, ...] = _PARENTS,
-) -> np.ndarray:
-    """Rescale IMUGPT22 joint positions to SMPLX22 bone lengths.
-
-    Each bone direction is preserved; only its length is changed to match the
-    SMPLX22 neutral skeleton.  The pelvis position is preserved as-is (it is
-    the root and has no parent bone).
-
-    Args:
-        positions: float32 array of shape (T, 22, 3) in any coordinate system.
-        parents: parent index tuple matching the joint order of ``positions``.
-
-    Returns:
-        float32 array of shape (T, 22, 3) with SMPLX22-compatible bone lengths.
-    """
-    positions = np.asarray(positions, dtype=np.float32)
-    if positions.ndim == 2:
-        positions = positions[None]
-        squeeze = True
-    else:
-        squeeze = False
-
-    if positions.shape[1] != 22 or positions.shape[2] != 3:
-        raise ValueError(
-            f"Expected positions of shape (T, 22, 3); got {positions.shape}."
-        )
-
-    target_lengths = _smplx22_bone_lengths()
-    out = positions.copy()
-
-    # BFS/topological order — parents are always before children in _PARENTS.
-    for i, p in enumerate(parents):
-        if p < 0:
-            continue
-        # Use original positions to get observed bone direction,
-        # then place child relative to its already-rescaled parent.
-        bone_vec = positions[:, i, :] - positions[:, p, :]  # (T, 3)
-        bone_norms = np.linalg.norm(bone_vec, axis=1, keepdims=True)  # (T, 1)
-
-        target_len = float(target_lengths[i])
-        if target_len < 1e-6:
-            # Zero-length canonical bone — keep original position.
-            continue
-
-        # Where the observed bone is degenerate (zero length), fall back to
-        # the canonical rest-pose offset so the child is at a valid position.
-        degenerate = (bone_norms[:, 0] < 1e-6)
-        neutral = _load_smplx22_neutral()
-        rest_dir = (neutral[i] - neutral[p]).astype(np.float32)
-        rest_dir_norm = float(np.linalg.norm(rest_dir))
-        if rest_dir_norm > 1e-6:
-            rest_dir = rest_dir / rest_dir_norm
-        else:
-            rest_dir = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-
-        bone_dirs = np.where(
-            degenerate[:, None],
-            rest_dir[None, :],
-            bone_vec / np.maximum(bone_norms, 1e-6),
-        )  # (T, 3)
-
-        out[:, i, :] = out[:, p, :] + bone_dirs * target_len
-
-    if squeeze:
-        out = out[0]
-    return out
-
-
-def retarget_positions_to_smplx22_space(
+def positions_imugpt22_to_smplx22_space(
     positions: np.ndarray,
     *,
     pelvis_index: int = 0,
 ) -> np.ndarray:
-    """Full retarget pipeline: pelvis-center → rescale → restore pelvis.
+    """Convert IMUGPT22 joint positions to SMPLX22-compatible space.
 
-    The Kimodo FK expects positions where the pelvis is the root and the rest
-    of the skeleton is expressed relative to it.  This function:
+    Applies two corrections in a single topological pass:
+    - Rescales each bone to the SMPLX22 canonical length.
+    - Flips the bone vector for L_Hip and R_Hip to match SMPLX22 orientation.
 
-    1. Subtracts pelvis so all positions are pelvis-relative.
-    2. Rescales each bone to SMPLX22 canonical length.
-    3. Re-adds the original pelvis translation so global positions are preserved.
+    After this transform, Kimodo's _estimate_global_rotations_from_positions
+    produces correct rotations for all joints including the hips.
 
     Args:
         positions: float32 (T, 22, 3) in IMUGPT pseudo-global space.
-        pelvis_index: index of the pelvis joint (0 for both IMUGPT22 and SMPLX22).
+        pelvis_index: pelvis joint index (0 for both skeletons).
 
     Returns:
-        float32 (T, 22, 3) with SMPLX22-compatible bone lengths, same pelvis trajectory.
+        float32 (T, 22, 3) — SMPLX22 bone lengths and orientations,
+        same pelvis trajectory as input.
     """
     positions = np.asarray(positions, dtype=np.float32)
-    pelvis = positions[:, pelvis_index : pelvis_index + 1, :].copy()  # (T,1,3)
+    if positions.ndim == 2:
+        positions = positions[np.newaxis]
+        squeeze = True
+    else:
+        squeeze = False
+
+    pelvis = positions[:, pelvis_index : pelvis_index + 1, :].copy()  # (T, 1, 3)
     centered = positions - pelvis
-    rescaled = rescale_positions_to_smplx22(centered)
-    return (rescaled + pelvis).astype(np.float32, copy=False)
 
+    target_lengths = _smplx22_bone_lengths()
+    neutral = _load_smplx22_neutral()
+    out = centered.copy()
 
-def compute_local_axis_angle_from_positions_robust(
-    positions_smplx_space: np.ndarray,
-) -> np.ndarray:
-    """Convert SMPLX22-space global positions to local axis-angle rotations.
+    for i, p in enumerate(_PARENTS):
+        if p < 0:
+            continue
 
-    Uses Kimodo's own _estimate_global_rotations_from_positions + FK inversion.
-    Assumes positions have already been rescaled to SMPLX22 bone lengths via
-    retarget_positions_to_smplx22_space.
+        target_len = float(target_lengths[i])
+        if target_len < 1e-6:
+            continue
 
-    Args:
-        positions_smplx_space: float32 (K, 22, 3), pelvis at its global position.
+        bone_vec = centered[:, i, :] - centered[:, p, :]  # (T, 3)
+        bone_norms = np.linalg.norm(bone_vec, axis=1, keepdims=True)  # (T, 1)
+        degenerate = bone_norms[:, 0] < 1e-6
 
-    Returns:
-        float32 (K, 22, 3) local axis-angle rotations.
-    """
-    import sys
-    import torch
+        rest_dir = (neutral[i] - neutral[p]).astype(np.float32)
+        rest_norm = float(np.linalg.norm(rest_dir))
+        rest_dir = rest_dir / rest_norm if rest_norm > 1e-6 else np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
-    _ensure_kimodo_on_syspath()
-    from kimodo.constraints import _estimate_global_rotations_from_positions
-    from kimodo.geometry import matrix_to_axis_angle
-    from kimodo.skeleton import build_skeleton, global_rots_to_local_rots
+        bone_dirs = np.where(
+            degenerate[:, np.newaxis],
+            rest_dir[np.newaxis],
+            bone_vec / np.maximum(bone_norms, 1e-6),
+        )
 
-    skeleton = build_skeleton(22)
+        if i in _INVERTED_BONE_JOINTS:
+            bone_dirs = -bone_dirs
 
-    # Pelvis-center before passing to retarget (Kimodo FK expects this).
-    pelvis = positions_smplx_space[:, 0:1, :].copy()
-    centered = positions_smplx_space - pelvis
+        out[:, i, :] = out[:, p, :] + bone_dirs * target_len
 
-    positions_tensor = torch.from_numpy(
-        np.ascontiguousarray(centered, dtype=np.float32)
-    )
-    global_rot_mats = _estimate_global_rotations_from_positions(positions_tensor, skeleton)
-
-    dets = torch.linalg.det(global_rot_mats)
-    if bool((dets <= 0.0).any()):
-        raise ValueError("Retarget produced non-rotation matrices (det <= 0).")
-
-    local_rot_mats = global_rots_to_local_rots(global_rot_mats, skeleton)
-    local_aa = matrix_to_axis_angle(local_rot_mats)
-    result = local_aa.detach().cpu().numpy().astype(np.float32, copy=False)
-
-    if not np.isfinite(result).all():
-        raise ValueError("Retarget produced NaN/Inf axis-angle values.")
-    return result
+    result = (out + pelvis).astype(np.float32, copy=False)
+    return result[0] if squeeze else result
 
 
 def _ensure_kimodo_on_syspath() -> None:
