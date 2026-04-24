@@ -4,3 +4,6 @@
 [submodule "kimodo"]
 	path = kimodo
 	url = git@github.com:nv-tlabs/kimodo.git
+[submodule "ts2vec"]
+	path = ts2vec
+	url = git@github.com:zhihanyue/ts2vec.git
