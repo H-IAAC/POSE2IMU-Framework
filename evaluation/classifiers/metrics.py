@@ -218,31 +218,18 @@ def compute_multitask_metrics(
         for head_name in PRIMARY_HEADS
         if head_name in head_metrics
     ]
-    primary_scores_all = [
-        float(head_metrics[head_name]["macro_f1"])
-        for head_name in PRIMARY_HEADS
-        if head_name in head_metrics
-    ]
     weighted_primary_score = None
-    weighted_primary_score_all = None
     if all(head_name in head_metrics for head_name in PRIMARY_HEADS):
         weighted_primary_score = (
             0.5 * float(head_metrics["emotion"]["supported_macro_f1"])
             + 0.25 * float(head_metrics["modality"]["supported_macro_f1"])
             + 0.25 * float(head_metrics["stimulus"]["supported_macro_f1"])
         )
-        weighted_primary_score_all = (
-            0.5 * float(head_metrics["emotion"]["macro_f1"])
-            + 0.25 * float(head_metrics["modality"]["macro_f1"])
-            + 0.25 * float(head_metrics["stimulus"]["macro_f1"])
-        )
 
     return {
         "per_head": head_metrics,
         "global_score_macro_f1_mean": None if len(primary_scores_supported) == 0 else float(np.mean(primary_scores_supported)),
         "global_score_weighted_macro_f1": weighted_primary_score,
-        "global_score_macro_f1_mean_all": None if len(primary_scores_all) == 0 else float(np.mean(primary_scores_all)),
-        "global_score_weighted_macro_f1_all": weighted_primary_score_all,
     }
 
 
@@ -333,14 +320,9 @@ def suite_results_frame(experiment_results: Sequence[Mapping[str, Any]]) -> pd.D
                 "split_id": result.get("split_id"),
                 "global_score_macro_f1_mean": metrics.get("global_score_macro_f1_mean"),
                 "global_score_weighted_macro_f1": metrics.get("global_score_weighted_macro_f1"),
-                "global_score_macro_f1_mean_all": metrics.get("global_score_macro_f1_mean_all"),
-                "global_score_weighted_macro_f1_all": metrics.get("global_score_weighted_macro_f1_all"),
                 "emotion_macro_f1": None if "emotion" not in per_head else per_head["emotion"]["supported_macro_f1"],
-                "emotion_macro_f1_all": None if "emotion" not in per_head else per_head["emotion"]["macro_f1"],
                 "modality_macro_f1": None if "modality" not in per_head else per_head["modality"]["supported_macro_f1"],
-                "modality_macro_f1_all": None if "modality" not in per_head else per_head["modality"]["macro_f1"],
                 "stimulus_macro_f1": None if "stimulus" not in per_head else per_head["stimulus"]["supported_macro_f1"],
-                "stimulus_macro_f1_all": None if "stimulus" not in per_head else per_head["stimulus"]["macro_f1"],
             }
         )
     return pd.DataFrame(rows)

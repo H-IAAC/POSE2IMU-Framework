@@ -19,7 +19,6 @@ from .metrics import (
     compute_domain_gap_summary,
     compute_multitask_metrics,
     suite_results_frame,
-    summarize_unsupported_classes,
 )
 from .training import (
     ModelConfig,
@@ -417,7 +416,6 @@ def _build_oof_summary(
     primary_head: str,
 ) -> pd.DataFrame:
     rows = []
-    unsupported_classes = summarize_unsupported_classes(support_report, head_names=PRIMARY_HEADS)
 
     for experiment_name, oof_report in oof_reports.items():
         per_head = dict(oof_report["metrics"].get("per_head", {}))
@@ -427,27 +425,10 @@ def _build_oof_summary(
                 "experiment_name": str(experiment_name),
                 "global_score_macro_f1_mean": oof_report["metrics"].get("global_score_macro_f1_mean"),
                 "global_score_weighted_macro_f1": oof_report["metrics"].get("global_score_weighted_macro_f1"),
-                "global_score_macro_f1_mean_all": oof_report["metrics"].get("global_score_macro_f1_mean_all"),
-                "global_score_weighted_macro_f1_all": oof_report["metrics"].get("global_score_weighted_macro_f1_all"),
-                "emotion_macro_f1_supported_oof": (
-                    None if "emotion" not in per_head else per_head["emotion"]["supported_macro_f1"]
-                ),
-                "emotion_macro_f1_all_oof": (
-                    None if "emotion" not in per_head else per_head["emotion"]["macro_f1"]
-                ),
-                "modality_macro_f1_oof": (
-                    None if "modality" not in per_head else per_head["modality"]["supported_macro_f1"]
-                ),
-                "stimulus_macro_f1_oof": (
-                    None if "stimulus" not in per_head else per_head["stimulus"]["supported_macro_f1"]
-                ),
-                "emotion_macro_f1": primary_head_metrics.get("supported_macro_f1") if primary_head == "emotion" else (
-                    None if "emotion" not in per_head else per_head["emotion"]["supported_macro_f1"]
-                ),
+                "emotion_macro_f1": None if "emotion" not in per_head else per_head["emotion"]["supported_macro_f1"],
                 "modality_macro_f1": None if "modality" not in per_head else per_head["modality"]["supported_macro_f1"],
                 "stimulus_macro_f1": None if "stimulus" not in per_head else per_head["stimulus"]["supported_macro_f1"],
-                "unsupported_classes": unsupported_classes,
-                "num_oof_samples": 0 if oof_report["metadata"].empty else int(len(oof_report["metadata"])),
+                "num_samples": 0 if oof_report["metadata"].empty else int(len(oof_report["metadata"])),
             }
         )
 
@@ -455,7 +436,7 @@ def _build_oof_summary(
     if summary.empty:
         return summary
 
-    ranking_column = f"{primary_head}_macro_f1_supported_oof" if f"{primary_head}_macro_f1_supported_oof" in summary.columns else "global_score_macro_f1_mean"
+    ranking_column = f"{primary_head}_macro_f1" if f"{primary_head}_macro_f1" in summary.columns else "global_score_macro_f1_mean"
     return summary.sort_values(ranking_column, ascending=False, kind="stable").reset_index(drop=True)
 
 
@@ -540,14 +521,9 @@ def run_experiment_suite(
             .agg(
                 global_score_macro_f1_mean=("global_score_macro_f1_mean", "mean"),
                 global_score_weighted_macro_f1=("global_score_weighted_macro_f1", "mean"),
-                global_score_macro_f1_mean_all=("global_score_macro_f1_mean_all", "mean"),
-                global_score_weighted_macro_f1_all=("global_score_weighted_macro_f1_all", "mean"),
                 emotion_macro_f1=("emotion_macro_f1", "mean"),
-                emotion_macro_f1_all=("emotion_macro_f1_all", "mean"),
                 modality_macro_f1=("modality_macro_f1", "mean"),
-                modality_macro_f1_all=("modality_macro_f1_all", "mean"),
                 stimulus_macro_f1=("stimulus_macro_f1", "mean"),
-                stimulus_macro_f1_all=("stimulus_macro_f1_all", "mean"),
             )
             .sort_values("emotion_macro_f1", ascending=False, kind="stable")
             .reset_index(drop=True)

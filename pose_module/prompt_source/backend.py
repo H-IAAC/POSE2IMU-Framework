@@ -162,9 +162,9 @@ class LegacyT2MGPTBackend:
                 "Legacy T2M-GPT backend requires the local CLIP and torch dependencies."
             ) from exc
 
-        import models.t2m_trans as trans
-        import models.vqvae as vqvae
-        from utils.motion_process import recover_from_ric
+        import t2mgpt.models.t2m_trans as trans
+        import t2mgpt.models.vqvae as vqvae
+        from t2mgpt.utils.motion_process import recover_from_ric
 
         device = _resolve_device(torch=torch, requested=str(self.config.device))
         mean_path = _resolve_stats_path(self.config.mean_path, self.config.extra_mean_candidates, label="mean")
