@@ -1,0 +1,65 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: ' POSE2IMU-Framework'
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Henrique
+    family-names: Parede
+    email: henriquehpds95@gmail.com
+    affiliation: State University of Campinas
+    orcid: 'https://orcid.org/0009-0003-5014-5865'
+  - given-names: Andrea
+    family-names: Bonarini
+    email: andrea.bonarini@polimi.it
+    affiliation: Politecnico di Milano
+    orcid: 'https://orcid.org/0000-0002-4880-4521'
+  - given-names: Paula
+    family-names: Dornhofer Paro Costa
+    email: paulad@unicamp.br
+    affiliation: State University of Campinas
+    orcid: 'https://orcid.org/0000-0002-1534-5744'
+repository-code: 'https://github.com/H-IAAC/POSE2IMU-Framework'
+abstract: >-
+  Framework for generating synthetic Inertial Measurement
+  Unit (IMU) data from human motion. It bridges two domains
+  that are rarely connected: pose estimation and motion
+  generation on one side, and wearable sensor simulation on
+  the other. Given a video of a person moving, or a
+  plain-text description of a movement, the framework
+  produces synthetic accelerometer readings as if physical
+  sensors had been attached to the body.
+
+
+  The primary motivation is the scarcity of labelled IMU
+  datasets. Collecting real IMU data requires physical
+  hardware, synchronized recordings, and careful placement
+  of sensors — a process that is slow, expensive, and hard
+  to scale. IMUGPT addresses this by deriving IMU signals
+  from 3D skeletal trajectories, which can themselves be
+  obtained either from video (via pose estimation) or
+  generated from text prompts (via language-conditioned
+  motion models). This makes it possible to produce large,
+  diverse, and controllable datasets for training and
+  evaluating activity recognition models without any
+  physical sensor.
+
+
+  The framework integrates three independent pipelines. The
+  first takes a monocular video, lifts the detected 2D
+  keypoints to a metric 3D skeleton using MotionBERT, and
+  feeds the resulting trajectory into IMUSim to synthesize
+  the sensor signals. The second pipeline replaces the video
+  with a natural-language prompt: T2M-GPT generates a 3D
+  motion sequence from text, which then goes through the
+  same IMU synthesis chain. The third pipeline uses a
+  Vision-Language Model (Qwen3-VL) to automatically describe
+  short windows of real motion and feeds those descriptions
+  — together with real joint positions as anchors — into
+  Kimodo, a SMPL-X motion generator, to produce novel but
+  physically grounded synthetic motions.
+license: LGPL-3.0
