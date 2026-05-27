@@ -1319,6 +1319,451 @@ def run_frequency_domain_tsne_all_captures(
     }
 
 
+def transform_windows_to_time_domain(
+    windows: np.ndarray,
+    *,
+    normalization: str = "zscore",
+) -> dict[str, Any]:
+    window_block = np.asarray(windows, dtype=np.float32)
+    if window_block.ndim != 4:
+        raise ValueError("windows must have shape [windows, frames, sensors, channels].")
+
+    n_windows = window_block.shape[0]
+    flat = window_block.reshape(n_windows, window_block.shape[1], -1)
+
+    mean = flat.mean(axis=1)
+    std = flat.std(axis=1)
+    minimum = flat.min(axis=1)
+    maximum = flat.max(axis=1)
+    energy = np.sqrt((flat ** 2).mean(axis=1))
+    mad = np.abs(flat - flat.mean(axis=1, keepdims=True)).mean(axis=1)
+    m3 = ((flat - flat.mean(axis=1, keepdims=True)) ** 3).mean(axis=1)
+    m4 = ((flat - flat.mean(axis=1, keepdims=True)) ** 4).mean(axis=1)
+    skewness = m3 / (std ** 3 + 1e-8)
+    kurtosis = m4 / (std ** 4 + 1e-8) - 3.0
+
+    features = np.concatenate([mean, std, minimum, maximum, energy, mad, skewness, kurtosis], axis=1).astype(np.float32)
+    normalized_mode = str(normalization).strip().lower()
+
+    if normalized_mode == "zscore":
+        feature_mean = features.mean(axis=1, keepdims=True)
+        feature_std = features.std(axis=1, keepdims=True)
+        features = ((features - feature_mean) / np.maximum(feature_std, 1e-8)).astype(np.float32)
+    elif normalized_mode == "energy":
+        feature_energy = np.sum(np.abs(features), axis=1, keepdims=True)
+        features = (features / np.maximum(feature_energy, 1e-8)).astype(np.float32)
+    else:
+        raise ValueError("normalization must be either 'zscore' or 'energy'.")
+
+    return {
+        "features": features,
+        "normalization": normalized_mode,
+        "feature_names": ["mean", "std", "min", "max", "energy", "mad", "skewness", "kurtosis"],
+        "num_channels": flat.shape[2],
+    }
+
+
+def _prepare_time_domain_tsne_capture(
+    capture_pair: dict[str, Any],
+    *,
+    signal_groups: Sequence[str] = ("acc",),
+    selected_sensors: Sequence[str] | None = None,
+    selected_axes: Sequence[str] = ("x", "y", "z"),
+    resample_method: str = "resample_poly",
+    window_type: str | None = None,
+    window_size: int | None = 128,
+    window_duration_sec: float | None = None,
+    stride_or_overlap_mode: str | None = None,
+    step_value: float | None = None,
+    stride_or_overlap: float | None = None,
+    overlap: float = 0.5,
+    stride: int | None = None,
+    stride_sec: float | None = None,
+    normalization: str = "zscore",
+) -> dict[str, Any]:
+    selected_bundle = extract_selected_modalities(
+        capture_pair,
+        signal_groups=signal_groups,
+        selected_sensors=selected_sensors,
+        selected_axes=selected_axes,
+    )
+    selected_summary_df = summarize_selected_signals(selected_bundle)
+
+    aligned_bundle = resample_real_to_synthetic_rate(
+        real_timestamps_sec=selected_bundle["real_timestamps_sec"],
+        real_values=selected_bundle["real_values"],
+        synthetic_timestamps_sec=selected_bundle["synthetic_timestamps_sec"],
+        synthetic_values=selected_bundle["synthetic_values"],
+        method=resample_method,
+    )
+    alignment_summary_df = summarize_alignment(aligned_bundle)
+    aligned_frequency_hz = float(alignment_summary_df.loc[0, "aligned_sampling_frequency_hz"])
+
+    resolved_window_spec = resolve_window_spec(
+        sampling_frequency_hz=aligned_frequency_hz,
+        window_type=window_type,
+        window_size=window_size,
+        window_duration_sec=window_duration_sec,
+    )
+    resolved_window_size = int(resolved_window_spec["window_size_samples"])
+    resolved_window_duration_sec = resolved_window_spec["window_duration_sec"]
+    resolved_window_type = str(resolved_window_spec["window_type"])
+
+    shared_kwargs = dict(
+        window_type="n_samples",
+        window_size=resolved_window_size,
+        window_duration_sec=None,
+        sampling_frequency_hz=aligned_frequency_hz,
+        stride_or_overlap_mode=stride_or_overlap_mode,
+        step_value=step_value,
+        stride_or_overlap=stride_or_overlap,
+        overlap=overlap,
+        stride=stride,
+        stride_sec=stride_sec,
+    )
+    real_windows_bundle = segment_signal_windows(aligned_bundle["real_resampled_values"], **shared_kwargs)
+    synthetic_windows_bundle = segment_signal_windows(aligned_bundle["synthetic_values"], **shared_kwargs)
+
+    if real_windows_bundle["windows"].shape != synthetic_windows_bundle["windows"].shape:
+        raise ValueError(
+            "Both domains must produce the same window shape after alignment. "
+            f"Received: {real_windows_bundle['windows'].shape} vs {synthetic_windows_bundle['windows'].shape}"
+        )
+
+    real_time_bundle = transform_windows_to_time_domain(real_windows_bundle["windows"], normalization=normalization)
+    synthetic_time_bundle = transform_windows_to_time_domain(synthetic_windows_bundle["windows"], normalization=normalization)
+
+    window_summary_df = summarize_windows(
+        window_type=resolved_window_type,
+        real_windows=real_windows_bundle["windows"],
+        synthetic_windows=synthetic_windows_bundle["windows"],
+        window_size=resolved_window_size,
+        window_duration_sec=resolved_window_duration_sec,
+        step_mode=str(real_windows_bundle["step_mode"]),
+        step_size_samples=int(real_windows_bundle["step_size"]),
+        step_duration_sec=real_windows_bundle["step_duration_sec"],
+        overlap_ratio=real_windows_bundle["overlap"],
+        overlap=real_windows_bundle["overlap"],
+        feature_dim=real_time_bundle["features"].shape[1],
+    )
+
+    return {
+        "capture_row": selected_bundle["capture_row"],
+        "selected_summary_df": selected_summary_df,
+        "alignment_summary_df": alignment_summary_df,
+        "window_summary_df": window_summary_df,
+        "selected_bundle": selected_bundle,
+        "aligned_bundle": aligned_bundle,
+        "real_windows_bundle": real_windows_bundle,
+        "synthetic_windows_bundle": synthetic_windows_bundle,
+        "real_time_bundle": real_time_bundle,
+        "synthetic_time_bundle": synthetic_time_bundle,
+        "window_type": resolved_window_type,
+        "window_size": resolved_window_size,
+        "window_duration_sec": resolved_window_duration_sec,
+    }
+
+
+def run_time_domain_tsne(
+    captures_df: pd.DataFrame,
+    *,
+    domain: str,
+    user_id: int,
+    tag_number: int,
+    take_id: str | None = None,
+    signal_groups: Sequence[str] = ("acc",),
+    selected_sensors: Sequence[str] | None = None,
+    selected_axes: Sequence[str] = ("x", "y", "z"),
+    synthetic_filename: str = "virtual_imu.npz",
+    resample_method: str = "resample_poly",
+    window_type: str | None = None,
+    window_size: int | None = 128,
+    window_duration_sec: float | None = None,
+    stride_or_overlap_mode: str | None = None,
+    step_value: float | None = None,
+    stride_or_overlap: float | None = None,
+    overlap: float = 0.5,
+    stride: int | None = None,
+    stride_sec: float | None = None,
+    normalization: str = "zscore",
+    perplexity: float = 30.0,
+    init: str = "pca",
+    random_state: int = 42,
+    figsize: tuple[float, float] = (8.5, 6.5),
+    title: str | None = None,
+    show: bool = True,
+) -> dict[str, Any]:
+    capture_pair = load_capture_pair(
+        captures_df,
+        domain=domain,
+        user_id=user_id,
+        tag_number=tag_number,
+        take_id=take_id,
+        synthetic_filename=synthetic_filename,
+    )
+    capture_result = _prepare_time_domain_tsne_capture(
+        capture_pair,
+        signal_groups=signal_groups,
+        selected_sensors=selected_sensors,
+        selected_axes=selected_axes,
+        resample_method=resample_method,
+        window_type=window_type,
+        window_size=window_size,
+        window_duration_sec=window_duration_sec,
+        stride_or_overlap_mode=stride_or_overlap_mode,
+        step_value=step_value,
+        stride_or_overlap=stride_or_overlap,
+        overlap=overlap,
+        stride=stride,
+        stride_sec=stride_sec,
+        normalization=normalization,
+    )
+
+    dataset_bundle = build_frequency_dataset(
+        real_features=capture_result["real_time_bundle"]["features"],
+        synthetic_features=capture_result["synthetic_time_bundle"]["features"],
+    )
+    embedding = fit_tsne_embedding(dataset_bundle["features"], perplexity=perplexity, init=init, random_state=random_state)
+    embedding_df = build_embedding_frame(embedding, dataset_bundle["labels"], window_size=int(capture_result["window_size"]))
+
+    figure, axis = plt.subplots(figsize=figsize)
+    auto_title = (
+        f"2D t-SNE (time) | sensors={', '.join(capture_result['selected_bundle']['selected_sensors'])} | "
+        f"groups={', '.join(capture_result['selected_bundle']['signal_groups'])} | "
+        f"window={int(capture_result['window_size'])} samples"
+    )
+    if capture_result["window_duration_sec"] is not None:
+        auto_title += f" ({float(capture_result['window_duration_sec']):.3f} s)"
+    plot_tsne_embedding(embedding_df, ax=axis, title=title or auto_title)
+    figure.tight_layout()
+    if show:
+        plt.show()
+
+    return {
+        "capture_row": capture_result["capture_row"],
+        "selected_summary_df": capture_result["selected_summary_df"],
+        "alignment_summary_df": capture_result["alignment_summary_df"],
+        "window_summary_df": capture_result["window_summary_df"],
+        "embedding_df": embedding_df,
+        "feature_matrix": dataset_bundle["features"],
+        "labels": dataset_bundle["labels"],
+        "figure": figure,
+        "axis": axis,
+        "selected_bundle": capture_result["selected_bundle"],
+        "aligned_bundle": capture_result["aligned_bundle"],
+    }
+
+
+def run_time_domain_tsne_all_captures(
+    captures_df: pd.DataFrame,
+    *,
+    signal_groups: Sequence[str] = ("acc",),
+    selected_sensors: Sequence[str] | None = None,
+    selected_axes: Sequence[str] = ("x", "y", "z"),
+    synthetic_filename: str = "virtual_imu.npz",
+    resample_method: str = "resample_poly",
+    window_type: str | None = None,
+    window_size: int | None = 128,
+    window_duration_sec: float | None = None,
+    stride_or_overlap_mode: str | None = None,
+    step_value: float | None = None,
+    stride_or_overlap: float | None = None,
+    overlap: float = 0.5,
+    stride: int | None = None,
+    stride_sec: float | None = None,
+    normalization: str = "zscore",
+    perplexity: float = 30.0,
+    init: str = "pca",
+    random_state: int = 42,
+    max_windows_per_capture_per_domain: int | None = 128,
+    skip_invalid_captures: bool = False,
+    figsize: tuple[float, float] = (9.5, 7.0),
+    title: str | None = None,
+    show: bool = True,
+) -> dict[str, Any]:
+    capture_frame = captures_df.copy().reset_index(drop=True)
+    if capture_frame.empty:
+        raise ValueError("captures_df cannot be empty for the aggregated t-SNE.")
+    if max_windows_per_capture_per_domain is not None and int(max_windows_per_capture_per_domain) <= 0:
+        raise ValueError("max_windows_per_capture_per_domain must be greater than 0 when provided.")
+
+    rng = np.random.default_rng(int(random_state))
+    feature_blocks: list[np.ndarray] = []
+    label_blocks: list[np.ndarray] = []
+    metadata_frames: list[pd.DataFrame] = []
+    capture_summary_rows: list[dict[str, Any]] = []
+    failed_capture_rows: list[dict[str, Any]] = []
+
+    reference_feature_dim: int | None = None
+    reference_window_size: int | None = None
+    reference_window_duration_sec: float | None = None
+    reference_selected_bundle: dict[str, Any] | None = None
+
+    for capture_index, (_, capture_row) in enumerate(capture_frame.iterrows()):
+        try:
+            capture_pair = load_capture_pair_from_row(capture_row, synthetic_filename=synthetic_filename)
+            capture_result = _prepare_time_domain_tsne_capture(
+                capture_pair,
+                signal_groups=signal_groups,
+                selected_sensors=selected_sensors,
+                selected_axes=selected_axes,
+                resample_method=resample_method,
+                window_type=window_type,
+                window_size=window_size,
+                window_duration_sec=window_duration_sec,
+                stride_or_overlap_mode=stride_or_overlap_mode,
+                step_value=step_value,
+                stride_or_overlap=stride_or_overlap,
+                overlap=overlap,
+                stride=stride,
+                stride_sec=stride_sec,
+                normalization=normalization,
+            )
+        except Exception as exc:
+            failed_row = pd.Series(capture_row).to_dict()
+            failed_row["error"] = str(exc)
+            failed_capture_rows.append(failed_row)
+            if not skip_invalid_captures:
+                raise
+            continue
+
+        real_features = np.asarray(capture_result["real_time_bundle"]["features"], dtype=np.float32)
+        synthetic_features = np.asarray(capture_result["synthetic_time_bundle"]["features"], dtype=np.float32)
+        current_feature_dim = int(real_features.shape[1])
+        current_window_size = int(capture_result["window_size"])
+        current_window_duration_sec = capture_result["window_duration_sec"]
+
+        if reference_feature_dim is None:
+            reference_feature_dim = current_feature_dim
+            reference_window_size = current_window_size
+            reference_window_duration_sec = current_window_duration_sec
+            reference_selected_bundle = capture_result["selected_bundle"]
+        elif current_feature_dim != reference_feature_dim:
+            raise ValueError(
+                "All captures must resolve the same feature dimensionality for the aggregated t-SNE. "
+                f"Received {current_feature_dim} vs {reference_feature_dim}."
+            )
+        elif current_window_size != reference_window_size:
+            raise ValueError(
+                "All captures must resolve the same window size in samples. "
+                f"Received {current_window_size} vs {reference_window_size}."
+            )
+
+        sampled_real_indices = _sample_feature_indices(real_features.shape[0], max_samples=max_windows_per_capture_per_domain, rng=rng)
+        sampled_synthetic_indices = _sample_feature_indices(synthetic_features.shape[0], max_samples=max_windows_per_capture_per_domain, rng=rng)
+
+        feature_blocks.extend([real_features[sampled_real_indices], synthetic_features[sampled_synthetic_indices]])
+        label_blocks.extend([
+            np.full(sampled_real_indices.size, DOMAIN_TO_LABEL["real"], dtype=np.int32),
+            np.full(sampled_synthetic_indices.size, DOMAIN_TO_LABEL["synthetic"], dtype=np.int32),
+        ])
+
+        base_metadata = {
+            "capture_index": int(capture_index),
+            "capture_domain": str(capture_result["capture_row"]["domain"]),
+            "user_id": int(capture_result["capture_row"]["user_id"]),
+            "tag_number": int(capture_result["capture_row"]["tag_number"]),
+            "take_id": None if pd.isna(capture_result["capture_row"].get("take_id")) else str(capture_result["capture_row"].get("take_id")),
+            "clip_id": str(capture_result["capture_row"]["clip_id"]),
+            "emotion": None if pd.isna(capture_result["capture_row"].get("emotion")) else str(capture_result["capture_row"].get("emotion")),
+            "modality": None if pd.isna(capture_result["capture_row"].get("modality")) else str(capture_result["capture_row"].get("modality")),
+            "stimulus": None if pd.isna(capture_result["capture_row"].get("stimulus")) else str(capture_result["capture_row"].get("stimulus")),
+        }
+        metadata_frames.extend([
+            pd.DataFrame({**base_metadata, "sample_index_within_capture": sampled_real_indices.astype(np.int32), "sampled_domain": "real"}),
+            pd.DataFrame({**base_metadata, "sample_index_within_capture": sampled_synthetic_indices.astype(np.int32), "sampled_domain": "synthetic"}),
+        ])
+
+        capture_summary_rows.append({
+            **base_metadata,
+            "aligned_sampling_frequency_hz": float(capture_result["alignment_summary_df"].loc[0, "aligned_sampling_frequency_hz"]),
+            "window_size_samples": int(capture_result["window_summary_df"].loc[0, "window_size_samples"]),
+            "window_duration_sec": capture_result["window_summary_df"].loc[0, "window_duration_sec"],
+            "real_num_windows_total": int(real_features.shape[0]),
+            "synthetic_num_windows_total": int(synthetic_features.shape[0]),
+            "sampled_real_num_windows": int(sampled_real_indices.size),
+            "sampled_synthetic_num_windows": int(sampled_synthetic_indices.size),
+            "feature_dim": current_feature_dim,
+        })
+
+    if len(feature_blocks) == 0:
+        raise ValueError("No capture could be processed for the aggregated t-SNE.")
+
+    dataset_bundle = {
+        "features": np.concatenate(feature_blocks, axis=0).astype(np.float32),
+        "labels": np.concatenate(label_blocks, axis=0).astype(np.int32),
+    }
+    embedding = fit_tsne_embedding(dataset_bundle["features"], perplexity=perplexity, init=init, random_state=random_state)
+    embedding_df = build_embedding_frame(embedding, dataset_bundle["labels"], window_size=int(reference_window_size))
+    embedding_metadata_df = pd.concat(metadata_frames, axis=0, ignore_index=True)
+    embedding_df = pd.concat([embedding_df, embedding_metadata_df], axis=1)
+
+    figure, axis = plt.subplots(figsize=figsize)
+    auto_title = (
+        f"2D t-SNE (time) | captures={len(capture_summary_rows)} | "
+        f"sensors={', '.join(reference_selected_bundle['selected_sensors'])} | "
+        f"groups={', '.join(reference_selected_bundle['signal_groups'])} | "
+        f"window={int(reference_window_size)} samples"
+    )
+    if reference_window_duration_sec is not None:
+        auto_title += f" ({float(reference_window_duration_sec):.3f} s)"
+    if max_windows_per_capture_per_domain is not None:
+        auto_title += f" | max/capture/domain={int(max_windows_per_capture_per_domain)}"
+    plot_tsne_embedding(embedding_df, ax=axis, title=title or auto_title, point_size=18.0, alpha=0.45)
+    figure.tight_layout()
+    if show:
+        plt.show()
+
+    class_highlight_figures: dict[str, plt.Figure] = {}
+    class_highlight_axes: dict[str, np.ndarray] = {}
+    for category_name in ("emotion", "modality", "stimulus"):
+        if category_name not in embedding_df.columns:
+            continue
+        category_values = _ordered_non_null_category_values(embedding_df[category_name])
+        if len(category_values) == 0:
+            continue
+        class_figure, class_axes = plot_tsne_class_highlight_grid(
+            embedding_df,
+            category=category_name,
+            title=f"2D t-SNE (time) real vs synthetic by {category_name}",
+            point_size=18.0,
+            max_columns=3 if len(category_values) > 4 else 2,
+        )
+        class_highlight_figures[category_name] = class_figure
+        class_highlight_axes[category_name] = class_axes
+        if show:
+            plt.show()
+
+    capture_summary_df = pd.DataFrame(capture_summary_rows)
+    failed_capture_df = pd.DataFrame(failed_capture_rows)
+    aggregate_summary_df = pd.DataFrame([{
+        "input_num_captures": int(capture_frame.shape[0]),
+        "processed_num_captures": int(capture_summary_df.shape[0]),
+        "failed_num_captures": int(failed_capture_df.shape[0]),
+        "num_points_total": int(embedding_df.shape[0]),
+        "num_real_points": int((embedding_df["domain"] == "real").sum()),
+        "num_synthetic_points": int((embedding_df["domain"] == "synthetic").sum()),
+        "max_windows_per_capture_per_domain": None if max_windows_per_capture_per_domain is None else int(max_windows_per_capture_per_domain),
+        "window_size_samples": int(reference_window_size),
+        "window_duration_sec": reference_window_duration_sec,
+        "feature_dim": int(reference_feature_dim),
+    }])
+
+    return {
+        "aggregate_summary_df": aggregate_summary_df,
+        "capture_summary_df": capture_summary_df,
+        "failed_capture_df": failed_capture_df,
+        "embedding_df": embedding_df,
+        "feature_matrix": dataset_bundle["features"],
+        "labels": dataset_bundle["labels"],
+        "figure": figure,
+        "axis": axis,
+        "class_highlight_figures": class_highlight_figures,
+        "class_highlight_axes": class_highlight_axes,
+        "selected_capture_df": capture_frame,
+    }
+
+
 def run_frequency_domain_tsne(
     captures_df: pd.DataFrame,
     *,
